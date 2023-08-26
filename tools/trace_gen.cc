@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "src/common.h"
+#include "tools/common.h"
 
 // Chrome Trace Event Format
 // https://docs.google.com/document/d/1CvAClvFfyA5R-PhYUmn5OOQtYMH4h6I0nSsKchNAySU/preview
@@ -73,44 +73,6 @@ struct Args {
   Buf out;
   u64 seed;
 };
-
-static void SplitArg(char *arg, Buf *out_key, Buf *out_value) {
-  ASSERT(arg);
-
-  char *p = arg;
-  while (*p) {
-    if (*p == '=') {
-      break;
-    }
-    p++;
-  }
-
-  char *end = p;
-  while (*end) {
-    end++;
-  }
-
-  if (out_key) {
-    *out_key = {
-        .ptr = (u8 *)arg,
-        .len = (usize)(p - arg),
-    };
-  }
-
-  if (out_value) {
-    if (p + 1 < end) {
-      *out_value = {
-          .ptr = (u8 *)(p + 1),
-          .len = (usize)(end - p - 1),
-      };
-    } else {
-      *out_value = {
-          .ptr = (u8 *)end,
-          .len = 0,
-      };
-    }
-  }
-}
 
 static void ParseArg(Args *args, Buf key, Buf value) {
   if (BufEql(key, STR_LITERAL("-h")) || BufEql(key, STR_LITERAL("--help"))) {

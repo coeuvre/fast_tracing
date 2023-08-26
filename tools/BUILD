@@ -1,5 +1,18 @@
+cc_library(
+    name = "common",
+    hdrs = ["common.h"],
+    srcs = ["common.cc"],
+    deps = ["//src:common"],
+)
+
 cc_binary(
     name = "trace_gen",
     srcs = ["trace_gen.cc"],
-    deps = ["//src:common"],
+    deps = [":common"],
+)
+
+cc_binary(
+    name = "parser_bench",
+    srcs = ["parser_bench.cc"],
+    deps = [":common"],
 )
