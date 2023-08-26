@@ -1,3 +1,4 @@
+.vscode/
 bazel-*
 node_modules/
 dist/
