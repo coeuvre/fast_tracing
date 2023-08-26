@@ -1,5 +1,13 @@
+package(default_visibility = ["//visibility:public"])
+
 load("@rules_cc//cc:defs.bzl", "cc_binary")
 load("@emsdk//emscripten_toolchain:wasm_rules.bzl", "wasm_cc_binary")
+
+cc_library(
+    name = "common",
+    hdrs = ["common.h"],
+    srcs = ["common.cc"],
+)
 
 cc_binary(
     name = "fast_tracing",
