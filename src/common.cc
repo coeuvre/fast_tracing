@@ -2,14 +2,15 @@
 #include "src/common.h"
 
 bool BufEql(Buf lhs, Buf rhs) {
-  bool result = lhs.len == rhs.len;
-  if (result) {
-    for (int i = 0; i < lhs.len; ++i) {
-      if (lhs.ptr[i] != rhs.ptr[i]) {
-        result = false;
-        break;
-      }
+  if (lhs.len != rhs.len) {
+    return false;
+  }
+
+  for (usize i = 0; i < lhs.len; ++i) {
+    if (lhs.ptr[i] != rhs.ptr[i]) {
+      return false;
     }
   }
-  return result;
+
+  return true;
 }
