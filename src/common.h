@@ -3,7 +3,7 @@
 
 #include <assert.h>
 #include <stddef.h>
-#include <stdint.h>
+#include <inttypes.h>
 
 #define ASSERT(e) assert(e)
 

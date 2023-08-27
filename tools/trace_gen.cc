@@ -81,7 +81,7 @@ static void ParseArg(Args *args, Buf key, Buf value) {
              BufEql(key, STR_LITERAL("--out"))) {
     args->out = value;
   } else if (BufEql(key, STR_LITERAL("--seed"))) {
-    if (sscanf((const char *)value.ptr, "%llu", &args->seed) != 1) {
+    if (sscanf((const char *)value.ptr, "%" SCNu64, &args->seed) != 1) {
       args->valid = false;
     }
   } else {
@@ -140,7 +140,7 @@ static void GenerateFunction(FILE *out, RandomSeries *series, usize thread_id,
              func_index);
     fprintf(out,
             "{\"name\": \"%s\", \"cat\": \"Unknown\", \"ph\": \"X\", \"ts\": "
-            "%llu, \"dur\": %llu, \"tid\": %zu, \"pid\": 1 }",
+            "%" PRIu64 ", \"dur\": %" PRIu64 ", \"tid\": %zu, \"pid\": 1 }",
             buf, ts, dur, thread_id);
   }
 }
