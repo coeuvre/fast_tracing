@@ -22,3 +22,10 @@ http_archive(
     url = "https://github.com/ocornut/imgui/archive/f8704cd085c4347f835c21dc12a3951924143872.tar.gz",
     build_file = "@//third_party/imgui:BUILD",
 )
+
+http_archive(
+  name = "com_google_googletest",
+  sha256 = "b976cf4fd57b318afdb1bdb27fc708904b3e4bed482859eb94ba2b4bdd077fe2",
+  strip_prefix = "googletest-f8d7d77c06936315286eb55f8de22cd23c188571",
+  urls = ["https://github.com/google/googletest/archive/f8d7d77c06936315286eb55f8de22cd23c188571.zip"],
+)

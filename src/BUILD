@@ -9,6 +9,16 @@ cc_library(
     srcs = ["common.cc"],
 )
 
+cc_test(
+  name = "common_test",
+  size = "small",
+  srcs = ["common_test.cc"],
+  deps = [
+    ":common",
+    "@com_google_googletest//:gtest_main",
+  ],
+)
+
 cc_binary(
     name = "fast_tracing",
     srcs = select({
