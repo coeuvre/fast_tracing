@@ -2,7 +2,7 @@
 
 #include <gtest/gtest.h>
 
-TEST(ArenaTest, SingleBlock) {
+TEST(MemoryArenaTest, SingleBlock) {
   MemoryArena arena = CreateMemoryArena();
   ASSERT_EQ(arena.num_blocks, 0);
 
@@ -17,7 +17,7 @@ TEST(ArenaTest, SingleBlock) {
   DestroyMemoryArena(&arena);
 }
 
-TEST(ArenaTest, MultipleBlocks) {
+TEST(MemoryArenaTest, MultipleBlocks) {
   MemoryArena arena = CreateMemoryArena();
 
   PushMemory(&arena, 1);
@@ -34,4 +34,14 @@ TEST(ArenaTest, MultipleBlocks) {
   ASSERT_EQ(arena.current, arena.sentinel.next);
 
   DestroyMemoryArena(&arena);
+}
+
+TEST(MemoryArenaDeathTest, OutOfOrderPop) {
+  MemoryArena arena = CreateMemoryArena();
+
+  void *first = PushMemory(&arena, 1);
+  PushMemory(&arena, 1);
+
+  ASSERT_DEATH({ PopMemory(&arena, first); },
+               "Current allocation must be the top one");
 }

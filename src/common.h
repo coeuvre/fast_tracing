@@ -1,9 +1,18 @@
 #ifndef FAST_TRACING_SRC_COMMON_H_
 #define FAST_TRACING_SRC_COMMON_H_
 
-#include <assert.h>
 #include <inttypes.h>
 #include <stddef.h>
+
+#ifdef NDEBUG
+#undef NDEBUG // Always want assert
+#include <assert.h>
+#define NDEBUG
+#define DEBUG_ASSERT(e)
+#else  // NDEBUG
+#include <assert.h>
+#define DEBUG_ASSERT(e) ASSERT(e)
+#endif  // NDEBUG
 
 #define ASSERT(e) assert(e)
 #define UNREACHABLE ASSERT("unreachable" && false)
