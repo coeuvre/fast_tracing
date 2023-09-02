@@ -7,16 +7,39 @@ cc_library(
     name = "common",
     hdrs = ["common.h"],
     srcs = ["common.cc"],
+    linkstatic = True,
 )
 
 cc_test(
-  name = "common_test",
-  size = "small",
-  srcs = ["common_test.cc"],
-  deps = [
-    ":common",
-    "@com_google_googletest//:gtest_main",
-  ],
+    name = "common_test",
+    size = "small",
+    srcs = ["common_test.cc"],
+    deps = [
+      ":common",
+      "@com_google_googletest//:gtest_main",
+    ],
+    linkstatic = True,
+)
+
+cc_library(
+    name = "json",
+    hdrs = ["json.h"],
+    srcs = ["json.cc"],
+    deps = [
+        ":common",
+    ],
+    linkstatic = True,
+)
+
+cc_test(
+    name = "json_test",
+    size = "small",
+    srcs = ["json_test.cc"],
+    deps = [
+      ":json",
+      "@com_google_googletest//:gtest_main",
+    ],
+    linkstatic = True,
 )
 
 cc_binary(

@@ -17,6 +17,8 @@
 #define ASSERT(e) assert(e)
 #define UNREACHABLE ASSERT("unreachable" && false)
 
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+
 typedef int8_t i8;
 typedef uint8_t u8;
 typedef int16_t i16;
@@ -31,20 +33,26 @@ typedef ptrdiff_t isize;
 typedef float f32;
 typedef double f64;
 
-inline usize Min(usize lhs, usize rhs) { return lhs < rhs ? lhs : rhs; }
+template <typename T>
+inline T Min(T lhs, T rhs) {
+  return lhs < rhs ? lhs : rhs;
+}
 
-inline usize Max(usize lhs, usize rhs) { return lhs > rhs ? lhs : rhs; }
+template <typename T>
+inline T Max(T lhs, T rhs) {
+  return lhs > rhs ? lhs : rhs;
+}
 
 struct Buf {
-  u8 *ptr;
-  usize len;
+  void *data;
+  usize size;
 };
 
-bool BufEql(Buf lhs, Buf rhs);
-Buf BufSub(Buf buf, usize start, usize end);
+bool BufAreEqual(Buf lhs, Buf rhs);
+Buf GetSubBuf(Buf buf, usize start, usize end);
 
 #define STR_LITERAL(s) \
-  Buf { .ptr = (u8 *)s, .len = sizeof(s) - 1 }
+  Buf { .data = (void *)s, .size = sizeof(s) - 1 }
 
 struct MemoryBlock {
   MemoryBlock *prev;
@@ -54,16 +62,21 @@ struct MemoryBlock {
 };
 
 struct MemoryArena {
-  MemoryBlock sentinel;
+  MemoryBlock *head;
+  MemoryBlock *tail;
   MemoryBlock *current;
   usize min_block_size;
   usize num_blocks;
 };
 
-MemoryArena CreateMemoryArena();
-void DestroyMemoryArena(MemoryArena *arena);
+MemoryArena InitMemoryArena();
+void DeinitMemoryArena(MemoryArena *arena);
 
 void *PushMemory(MemoryArena *arena, usize size);
+// Like realloc, reuses the same pointer and extends its capacity if possible
+void *PushMemory(MemoryArena *arena, void *data, usize new_size);
 void PopMemory(MemoryArena *arena, void *data);
+
+void ClearMemoryArena(MemoryArena *arena);
 
 #endif  // FAST_TRACING_SRC_COMMON_H_

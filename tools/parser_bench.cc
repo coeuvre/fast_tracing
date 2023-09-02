@@ -24,11 +24,12 @@ struct Args {
 };
 
 static void ParseArg(Args *args, Buf key, Buf value) {
-  if (BufEql(key, STR_LITERAL("-h")) || BufEql(key, STR_LITERAL("--help"))) {
+  if (BufAreEqual(key, STR_LITERAL("-h")) ||
+      BufAreEqual(key, STR_LITERAL("--help"))) {
     args->help = true;
-  } else if (!value.ptr) {
+  } else if (!value.data) {
     // Arg without value, treat it as <FILE> argument.
-    if (!args->file.ptr) {
+    if (!args->file.data) {
       args->file = key;
     } else {
       // Saw a <FILE> argument before.
@@ -46,61 +47,121 @@ static Args ParseArgs(int argc, char *argv[]) {
     SplitArg(argv[i], &key, &value);
     ParseArg(&args, key, value);
   }
-  if (!args.file.ptr) {
+  if (!args.file.data) {
     args.valid = false;
   }
   return args;
 }
 
-static bool ReadFile(Buf filename, FILE *file, Buf buf, Buf *out_content) {
-  ASSERT(out_content);
-  bool has_content = true;
-  usize nread = fread((void *)buf.ptr, 1, buf.len, file);
-  if (nread < buf.len) {
-    int error = ferror(file);
-    if (error != 0) {
-      has_content = false;
-      fprintf(stderr, "Failed to read file %.*s: %s\n", (int)filename.len,
-              filename.ptr, strerror(error));
-    }
-  }
+struct JsonTokenizer {
+  Buf input;
+  bool has_error;
+};
 
-  has_content = has_content && nread > 0;
-  if (has_content) {
-    *out_content = {.ptr = buf.ptr, .len = nread};
-  } else {
-    *out_content = {};
+static bool IsScanning(JsonTokenizer *tok) { return !tok->has_error; }
+
+static void SetInput(JsonTokenizer *tok, Buf input) { tok->input = input; }
+
+enum JsonTokenType {
+  kJsonTokenError,
+  kJsonTokenEof,
+};
+
+struct JsonToken {
+  JsonTokenType type;
+  union {
+    Buf error;
+    Buf string;
+    Buf number;
+  };
+};
+
+static JsonToken GetJsonToken(JsonTokenizer *tok) {
+  JsonToken token = {};
+  if (token.type == kJsonTokenError) {
+    tok->has_error = true;
   }
-  return has_content;
+  return token;
 }
 
-static int ParseFile(Buf filename, FILE *file) {
-  int result = 0;
+struct File {
+  Buf path;
+  FILE *handle;
+};
 
-  const usize kBufCap = 4096;
-  u8 buf_[kBufCap];
-  Buf buf = {.ptr = buf_, .len = kBufCap};
-
-  Buf content;
-  while (ReadFile(filename, file, buf, &content)) {
-    // TODO: Parse the content.
+static File OpenFile(Buf path) {
+  File file = {};
+  file.path = path;
+  file.handle = fopen((char *)path.data, "rb");
+  if (!file.handle) {
+    fprintf(stderr, "Failed to open file %.*s: %s\n", (int)path.size,
+            (char *)path.data, strerror(errno));
   }
+  return file;
+}
 
-  return result;
+static void CloseFile(File *file) {
+  if (file->handle) {
+    fclose(file->handle);
+    file->handle = 0;
+  }
+}
+
+static usize ReadFile(File *file, Buf buf) {
+  usize nread = fread(buf.data, 1, buf.size, file->handle);
+  if (nread < buf.size) {
+    int error = ferror(file->handle);
+    if (error != 0) {
+      nread = 0;
+      fprintf(stderr, "Failed to read file %.*s: %s\n", (int)file->path.size,
+              (char *)file->path.data, strerror(error));
+    }
+  }
+  return nread;
 }
 
 static int Run(Args args) {
-  ASSERT(args.file.ptr);
+  ASSERT(args.file.data);
   int result = 0;
 
-  char *filename = (char *)args.file.ptr;
-  FILE *file = fopen(filename, "r");
-  if (file) {
-    ParseFile(args.file, file);
+  JsonTokenizer tok = {};
+
+  const usize kBufCap = 4096;
+  u8 buf_[kBufCap];
+  Buf buf = {.data = buf_, .size = kBufCap};
+
+  File file = OpenFile(args.file);
+  if (file.handle) {
+    while (IsScanning(&tok)) {
+      usize nread = ReadFile(&file, buf);
+      if (nread == 0) {
+        break;
+      }
+
+      SetInput(&tok, GetSubBuf(buf, 0, nread));
+      bool done = false;
+      while (!done) {
+        JsonToken token = GetJsonToken(&tok);
+        switch (token.type) {
+          case kJsonTokenError:
+            fprintf(stderr, "JSON error: %.*s\n", (int)token.error.size,
+                    (char *)token.error.data);
+            done = true;
+            break;
+
+          case kJsonTokenEof:
+            done = true;
+            break;
+
+          default:
+            UNREACHABLE;
+        }
+      }
+    }
+
+    CloseFile(&file);
   } else {
-    result = errno;
-    fprintf(stderr, "Failed to open file %.*s: %s\n", (int)args.file.len,
-            args.file.ptr, strerror(errno));
+    result = 1;
   }
 
   return result;

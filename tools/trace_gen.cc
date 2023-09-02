@@ -75,13 +75,14 @@ struct Args {
 };
 
 static void ParseArg(Args *args, Buf key, Buf value) {
-  if (BufEql(key, STR_LITERAL("-h")) || BufEql(key, STR_LITERAL("--help"))) {
+  if (BufAreEqual(key, STR_LITERAL("-h")) ||
+      BufAreEqual(key, STR_LITERAL("--help"))) {
     args->help = true;
-  } else if (BufEql(key, STR_LITERAL("-o")) ||
-             BufEql(key, STR_LITERAL("--out"))) {
+  } else if (BufAreEqual(key, STR_LITERAL("-o")) ||
+             BufAreEqual(key, STR_LITERAL("--out"))) {
     args->out = value;
-  } else if (BufEql(key, STR_LITERAL("--seed"))) {
-    if (sscanf((const char *)value.ptr, "%" SCNu64, &args->seed) != 1) {
+  } else if (BufAreEqual(key, STR_LITERAL("--seed"))) {
+    if (sscanf((const char *)value.data, "%" SCNu64, &args->seed) != 1) {
       args->valid = false;
     }
   } else {
@@ -171,12 +172,12 @@ static void Generate(FILE *out, u64 seed) {
 static int Run(Args args) {
   int result = 0;
   FILE *out = stdout;
-  if (args.out.ptr) {
-    out = fopen((char *)args.out.ptr, "w");
+  if (args.out.data) {
+    out = fopen((char *)args.out.data, "w");
     if (!out) {
       result = errno;
-      fprintf(stderr, "Failed to open file %s: %s\n", args.out.ptr,
-              strerror(errno));
+      fprintf(stderr, "Failed to open file %.*s: %s\n", (int)args.out.size,
+              (char *)args.out.data, strerror(errno));
     }
   }
 

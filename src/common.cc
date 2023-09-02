@@ -3,13 +3,16 @@
 #include <memory.h>
 #include <stdlib.h>
 
-bool BufEql(Buf lhs, Buf rhs) {
-  if (lhs.len != rhs.len) {
+bool BufAreEqual(Buf lhs, Buf rhs) {
+  if (lhs.size != rhs.size) {
     return false;
   }
 
-  for (usize i = 0; i < lhs.len; ++i) {
-    if (lhs.ptr[i] != rhs.ptr[i]) {
+  u8 *a = (u8 *)lhs.data;
+  u8 *b = (u8 *)rhs.data;
+
+  for (usize i = 0; i < lhs.size; ++i) {
+    if (a[i] != b[i]) {
       return false;
     }
   }
@@ -17,10 +20,10 @@ bool BufEql(Buf lhs, Buf rhs) {
   return true;
 }
 
-Buf BufSub(Buf buf, usize start, usize end) {
+Buf GetSubBuf(Buf buf, usize start, usize end) {
   ASSERT(start <= end);
-  ASSERT(end <= buf.len);
-  return Buf{.ptr = buf.ptr + start, .len = end - start};
+  ASSERT(end <= buf.size);
+  return Buf{.data = (u8 *)buf.data + start, .size = end - start};
 }
 
 struct MemoryHeader {
@@ -34,11 +37,12 @@ static MemoryBlock *PushBlock(MemoryArena *arena, usize block_size) {
   block->size = block_size;
   block->cursor = 0;
 
-  block->prev = arena->sentinel.prev;
-  arena->sentinel.prev->next = block;
-
-  block->next = &arena->sentinel;
-  arena->sentinel.prev = block;
+  block->next = 0;
+  block->prev = arena->tail;
+  arena->tail = block;
+  if (!arena->head) {
+    arena->head = block;
+  }
 
   arena->num_blocks++;
 
@@ -47,39 +51,33 @@ static MemoryBlock *PushBlock(MemoryArena *arena, usize block_size) {
 
 static const usize kArenaMinBlockSize = 4096;
 
-MemoryArena CreateMemoryArena() {
+MemoryArena InitMemoryArena() {
   MemoryArena arena = {};
-  arena.sentinel.prev = &arena.sentinel;
-  arena.sentinel.next = &arena.sentinel;
-  arena.current = &arena.sentinel;
   arena.min_block_size = kArenaMinBlockSize;
   return arena;
 }
 
-void DestroyMemoryArena(MemoryArena *arena) {
-  MemoryBlock *block = arena->sentinel.next;
-  while (block != &arena->sentinel) {
+void DeinitMemoryArena(MemoryArena *arena) {
+  MemoryBlock *block = arena->head;
+  while (block) {
     MemoryBlock *next = block->next;
     free(block);
     block = next;
   }
-  arena->sentinel.prev = &arena->sentinel;
-  arena->sentinel.next = &arena->sentinel;
-  arena->current = &arena->sentinel;
-  arena->num_blocks = 0;
+  *arena = {};
 }
 
 static void EnsureCurrentBlock(MemoryArena *arena, usize size) {
   MemoryBlock *block = arena->current;
 
-  while (block != &arena->sentinel) {
+  while (block) {
     if (block->cursor + size <= block->size) {
       break;
     }
     block = block->next;
   }
 
-  if (block == &arena->sentinel) {
+  if (!block) {
     block = PushBlock(arena, Max(size, arena->min_block_size));
   }
 
@@ -107,6 +105,34 @@ void *PushMemory(MemoryArena *arena, usize size) {
   return data;
 }
 
+void *PushMemory(MemoryArena *arena, void *data, usize new_size) {
+  if (!data) {
+    return PushMemory(arena, new_size);
+  }
+
+  MemoryHeader *header = (MemoryHeader *)data - 1;
+  MemoryBlock *block =
+      (MemoryBlock *)((u8 *)header - header->offset - sizeof(MemoryBlock));
+
+  usize new_total_size = sizeof(MemoryHeader) + new_size;
+  // data is the last allocation in the arena
+  if (arena->current == block &&
+      header->offset + header->size == block->cursor) {
+    if (header->offset + new_total_size <= block->size) {
+      block->cursor = header->offset + new_total_size;
+      header->size = new_total_size;
+      return data;
+    }
+
+    // Remaining space in the block is not enough, fall back to new allocation
+    PopMemory(arena, data);
+  }
+
+  void *new_data = PushMemory(arena, new_size);
+  memcpy(new_data, data, header->size - sizeof(MemoryHeader));
+  return new_data;
+}
+
 void PopMemory(MemoryArena *arena, void *data) {
   ASSERT(data);
   MemoryHeader *header = (MemoryHeader *)data - 1;
@@ -119,7 +145,16 @@ void PopMemory(MemoryArena *arena, void *data) {
 
   block->cursor = header->offset;
 
-  if (block->cursor == 0 && block->prev != &arena->sentinel) {
+  if (block->cursor == 0 && block->prev) {
     arena->current = block->prev;
   }
+}
+
+void ClearMemoryArena(MemoryArena *arena) {
+  MemoryBlock *block = arena->head;
+  while (block) {
+    block->cursor = 0;
+    block = block->next;
+  }
+  arena->current = arena->head;
 }
