@@ -37,14 +37,24 @@ static void RunJsonTokenizerTest(const char *inputs[], int input_count,
   DeinitJsonTokenizer(&tok);
 }
 
-TEST(JsonTokenizerTest, String) {
+TEST(JsonTokenizerTest, StringEscape) {
   const char *inputs[] = {
       " \"a",
       "b\\",
       "\\\" ",
   };
   JsonToken tokens[] = {
-      {.type = kJsonTokenString, .value = STR_LITERAL("ab\\")},
+      {.type = kJsonTokenString, .value = STR_LITERAL("ab\\\\")},
+  };
+  RunJsonTokenizerTest(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens));
+}
+
+TEST(JsonTokenizerTest, StringEscapeU) {
+  const char *inputs[] = {
+      "\"\\uabcd\"",
+  };
+  JsonToken tokens[] = {
+      {.type = kJsonTokenString, .value = STR_LITERAL("\\uabcd")},
   };
   RunJsonTokenizerTest(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens));
 }

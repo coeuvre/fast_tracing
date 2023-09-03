@@ -12,10 +12,10 @@ enum {
   kJsonTokenizerStateDone,
   kJsonTokenizerStateString,
   kJsonTokenizerStateStringEscape,
-  // kJsonTokenizerStateStringEscapeU0,
-  // kJsonTokenizerStateStringEscapeU1,
-  // kJsonTokenizerStateStringEscapeU2,
-  // kJsonTokenizerStateStringEscapeU3,
+  kJsonTokenizerStateStringEscapeU0,
+  kJsonTokenizerStateStringEscapeU1,
+  kJsonTokenizerStateStringEscapeU2,
+  kJsonTokenizerStateStringEscapeU3,
   kJsonTokenizerStateStringEnd,
   kJsonTokenizerStateInteger,
   kJsonTokenizerStateFraction,
@@ -221,6 +221,7 @@ static void OnString(JsonTokenizer *tok, JsonToken *token) {
       } break;
 
       case '\\': {
+        SaveChar(tok, ch);
         tok->state = kJsonTokenizerStateStringEscape;
         return;
       } break;
@@ -242,40 +243,20 @@ static void OnStringEscape(JsonTokenizer *tok, JsonToken *token) {
   switch (ch) {
     case '"':
     case '\\':
-    case '/': {
+    case '/':
+    case 'b':
+    case 'f':
+    case 'n':
+    case 'r':
+    case 't': {
       SaveChar(tok, ch);
       tok->state = kJsonTokenizerStateString;
     } break;
 
-    case 'b': {
-      SaveChar(tok, '\b');
-      tok->state = kJsonTokenizerStateString;
+    case 'u': {
+      SaveChar(tok, ch);
+      tok->state = kJsonTokenizerStateStringEscapeU0;
     } break;
-
-    case 'f': {
-      SaveChar(tok, '\f');
-      tok->state = kJsonTokenizerStateString;
-    } break;
-
-    case 'n': {
-      SaveChar(tok, '\n');
-      tok->state = kJsonTokenizerStateString;
-    } break;
-
-    case 'r': {
-      SaveChar(tok, '\r');
-      tok->state = kJsonTokenizerStateString;
-    } break;
-
-    case 't': {
-      SaveChar(tok, '\t');
-      tok->state = kJsonTokenizerStateString;
-    } break;
-
-      // TODO: Unicode escapes
-      // case 'u': {
-      //   tok->state = kJsonTokenizerStateStringEscapeU0;
-      // } break;
 
     default: {
       tok->state = kJsonTokenizerStateError;
@@ -284,109 +265,47 @@ static void OnStringEscape(JsonTokenizer *tok, JsonToken *token) {
   }
 }
 
-// static bool MaybeSaveHex(JsonTokenizer *tok, u8 *out) {
-//   u8 ch = TakeInput(tok);
-//   switch (ch) {
-//     case '0':
-//     case '1':
-//     case '2':
-//     case '3':
-//     case '4':
-//     case '5':
-//     case '6':
-//     case '7':
-//     case '8':
-//     case '9':
-//     case 'a':
-//     case 'b':
-//     case 'c':
-//     case 'd':
-//     case 'e':
-//     case 'f':
-//     case 'A':
-//     case 'B':
-//     case 'C':
-//     case 'D':
-//     case 'E':
-//     case 'F': {
-//       SaveChar(tok, ch);
+static void OnStringEscapeU(JsonTokenizer *tok, JsonToken *token,
+                            u8 next_state) {
+  if (!HasInput(tok)) {
+    SetEof(tok, token);
+    return;
+  }
 
-//       *out = ch;
-//       return true;
-//     } break;
+  u8 ch = TakeInput(tok);
+  switch (ch) {
+    case '0':
+    case '1':
+    case '2':
+    case '3':
+    case '4':
+    case '5':
+    case '6':
+    case '7':
+    case '8':
+    case '9':
+    case 'a':
+    case 'b':
+    case 'c':
+    case 'd':
+    case 'e':
+    case 'f':
+    case 'A':
+    case 'B':
+    case 'C':
+    case 'D':
+    case 'E':
+    case 'F': {
+      SaveChar(tok, ch);
+      tok->state = next_state;
+    } break;
 
-//     default: {
-//       *out = ch;
-//       return false;
-//     } break;
-//   }
-// }
-
-// static void OnStringEscapeU0(JsonTokenizer *tok, JsonToken *token) {
-//   if (!HasInput(tok)) {
-//     *token = {.type = kJsonTokenEof};
-//     return;
-//   }
-
-//   u8 ch;
-//   if (MaybeSaveHex(tok, &ch)) {
-//     tok->state = kJsonTokenizerStateStringEscapeU1;
-//   } else {
-//     tok->state = kJsonTokenizerStateError;
-//     *token = {.type = kJsonTokenError,
-//               .value = STR_LITERAL("Expected hex digit")};
-//   }
-// }
-
-// static void OnStringEscape1(JsonTokenizer *tok, JsonToken *token) {
-//   if (!HasInput(tok)) {
-//     *token = {.type = kJsonTokenEof};
-//     return;
-//   }
-
-//   u8 ch;
-//   if (MaybeSaveHex(tok, &ch)) {
-//     tok->state = kJsonTokenizerStateStringEscapeU2;
-//   } else {
-//     tok->state = kJsonTokenizerStateError;
-//     *token = {.type = kJsonTokenError,
-//               .value = STR_LITERAL("Expected hex digit")};
-//   }
-// }
-
-// static void OnStringEscape2(JsonTokenizer *tok, JsonToken *token) {
-//   if (!HasInput(tok)) {
-//     *token = {.type = kJsonTokenEof};
-//     return;
-//   }
-
-//   u8 ch;
-//   if (MaybeSaveHex(tok, &ch)) {
-//     tok->state = kJsonTokenizerStateStringEscapeU3;
-//   } else {
-//     tok->state = kJsonTokenizerStateError;
-//     *token = {.type = kJsonTokenError,
-//               .value = STR_LITERAL("Expected hex digit")};
-//   }
-// }
-
-// static void OnStringEscape3(JsonTokenizer *tok, JsonToken *token) {
-//   if (!HasInput(tok)) {
-//     *token = {.type = kJsonTokenEof};
-//     return;
-//   }
-
-//   u8 ch;
-//   if (MaybeSaveHex(tok, &ch)) {
-//     tok->buf.data
-//     tok->buf_cursor - 4;
-//     tok->state = kJsonTokenizerStateString;
-//   } else {
-//     tok->state = kJsonTokenizerStateError;
-//     *token = {.type = kJsonTokenError,
-//               .value = STR_LITERAL("Expected hex digit")};
-//   }
-// }
+    default: {
+      tok->state = kJsonTokenizerStateError;
+      SetError(tok, token, "Expected hex digit but got '%c'", ch);
+    } break;
+  }
+}
 
 static void OnStringEnd(JsonTokenizer *tok, JsonToken *token) {
   PopMemory(&tok->arena, tok->buf.data);
@@ -613,6 +532,22 @@ JsonToken GetNextJsonToken(JsonTokenizer *tok) {
 
       case kJsonTokenizerStateStringEscape: {
         OnStringEscape(tok, &token);
+      } break;
+
+      case kJsonTokenizerStateStringEscapeU0: {
+        OnStringEscapeU(tok, &token, kJsonTokenizerStateStringEscapeU1);
+      } break;
+
+      case kJsonTokenizerStateStringEscapeU1: {
+        OnStringEscapeU(tok, &token, kJsonTokenizerStateStringEscapeU2);
+      } break;
+
+      case kJsonTokenizerStateStringEscapeU2: {
+        OnStringEscapeU(tok, &token, kJsonTokenizerStateStringEscapeU3);
+      } break;
+
+      case kJsonTokenizerStateStringEscapeU3: {
+        OnStringEscapeU(tok, &token, kJsonTokenizerStateString);
       } break;
 
       case kJsonTokenizerStateStringEnd: {
