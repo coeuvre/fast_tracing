@@ -14,5 +14,8 @@ cc_binary(
 cc_binary(
     name = "parser_bench",
     srcs = ["parser_bench.cc"],
-    deps = [":common"],
+    deps = [
+        ":common",
+        "//src:json",
+    ],
 )

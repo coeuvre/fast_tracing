@@ -39,13 +39,14 @@ struct JsonTokenizer {
 
   Buf input;
   usize cursor;
+  bool last_input;
 };
 
 JsonTokenizer InitJsonTokenizer();
 void DeinitJsonTokenizer(JsonTokenizer *tok);
 
 bool IsJsonTokenizerScanning(JsonTokenizer *tok);
-void SetJsonTokenizerInput(JsonTokenizer *tok, Buf input);
+void SetJsonTokenizerInput(JsonTokenizer *tok, Buf input, bool last_input);
 
 JsonToken GetNextJsonToken(JsonTokenizer *tok);
 

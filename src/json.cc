@@ -9,6 +9,7 @@ static const usize kJsonErrorMessageSize = 1024;
 enum {
   kJsonTokenizerStateError,
   kJsonTokenizerStateStart,
+  kJsonTokenizerStateDone,
   kJsonTokenizerStateString,
   kJsonTokenizerStateStringEscape,
   // kJsonTokenizerStateStringEscapeU0,
@@ -17,6 +18,10 @@ enum {
   // kJsonTokenizerStateStringEscapeU3,
   kJsonTokenizerStateStringEnd,
   kJsonTokenizerStateInteger,
+  kJsonTokenizerStateFraction,
+  kJsonTokenizerStateExpoinent,
+  kJsonTokenizerStateExpoinentNoSign,
+  kJsonTokenizerStateNumberEnd,
   kJsonTokenizerStateT,
   kJsonTokenizerStateTr,
   kJsonTokenizerStateTru,
@@ -42,12 +47,14 @@ void DeinitJsonTokenizer(JsonTokenizer *tok) {
 }
 
 bool IsJsonTokenizerScanning(JsonTokenizer *tok) {
-  return tok->state != kJsonTokenizerStateError;
+  return tok->state != kJsonTokenizerStateError &&
+         tok->state != kJsonTokenizerStateDone;
 }
 
-void SetJsonTokenizerInput(JsonTokenizer *tok, Buf input) {
+void SetJsonTokenizerInput(JsonTokenizer *tok, Buf input, bool last_input) {
   ASSERT(tok->cursor == tok->input.size && "Last input was not fully consumed");
   tok->input = input;
+  tok->last_input = last_input;
   tok->cursor = 0;
 }
 
@@ -60,11 +67,12 @@ static void SetError(JsonTokenizer *tok, JsonToken *token, const char *fmt,
 
   va_list va;
   va_start(va, fmt);
-  vsnprintf(buf, buf_size, fmt, va);
+  usize nwritten = vsnprintf(buf, buf_size, fmt, va);
   va_end(va);
 
   tok->state = kJsonTokenizerStateError;
-  *token = {.type = kJsonTokenError, .value = {.data = buf, .size = buf_size}};
+  *token = {.type = kJsonTokenError,
+            .value = {.data = buf, .size = Min(buf_size, nwritten)}};
 }
 
 static inline bool HasInput(JsonTokenizer *tok) {
@@ -74,6 +82,11 @@ static inline bool HasInput(JsonTokenizer *tok) {
 static inline u8 TakeInput(JsonTokenizer *tok) {
   ASSERT(HasInput(tok));
   return ((u8 *)tok->input.data)[tok->cursor++];
+}
+
+static inline void ReturnInput(JsonTokenizer *tok) {
+  ASSERT(tok->cursor > 0);
+  tok->cursor--;
 }
 
 static void SkipWhitespace(JsonTokenizer *tok) {
@@ -102,11 +115,18 @@ static inline void SaveChar(JsonTokenizer *tok, u8 ch) {
   ((u8 *)tok->buf.data)[tok->buf_cursor] = 0;
 }
 
+static void SetEof(JsonTokenizer *tok, JsonToken *token) {
+  *token = {.type = kJsonTokenEof};
+  if (tok->last_input) {
+    tok->state = kJsonTokenizerStateDone;
+  }
+}
+
 static void OnStart(JsonTokenizer *tok, JsonToken *token) {
   SkipWhitespace(tok);
 
   if (!HasInput(tok)) {
-    *token = {.type = kJsonTokenEof};
+    SetEof(tok, token);
     return;
   }
 
@@ -176,10 +196,19 @@ static void OnStart(JsonTokenizer *tok, JsonToken *token) {
   }
 }
 
+static void SetStringErrorOrEof(JsonTokenizer *tok, JsonToken *token) {
+  if (tok->last_input) {
+    SetError(tok, token,
+             "End of string '\"' expected but reached end of input");
+  } else {
+    SetEof(tok, token);
+  }
+}
+
 static void OnString(JsonTokenizer *tok, JsonToken *token) {
   while (token->type == kJsonTokenUnknown) {
     if (!HasInput(tok)) {
-      *token = {.type = kJsonTokenEof};
+      SetStringErrorOrEof(tok, token);
       return;
     }
 
@@ -205,7 +234,7 @@ static void OnString(JsonTokenizer *tok, JsonToken *token) {
 
 static void OnStringEscape(JsonTokenizer *tok, JsonToken *token) {
   if (!HasInput(tok)) {
-    *token = {.type = kJsonTokenEof};
+    SetStringErrorOrEof(tok, token);
     return;
   }
 
@@ -361,6 +390,190 @@ static void OnStringEscape(JsonTokenizer *tok, JsonToken *token) {
 
 static void OnStringEnd(JsonTokenizer *tok, JsonToken *token) {
   PopMemory(&tok->arena, tok->buf.data);
+  tok->buf.data = 0;
+  tok->buf.size = 0;
+  tok->buf_cursor = 0;
+  tok->state = kJsonTokenizerStateStart;
+}
+
+static void SetNumberOrEof(JsonTokenizer *tok, JsonToken *token) {
+  if (tok->last_input) {
+    tok->state = kJsonTokenizerStateNumberEnd;
+    *token = {.type = kJsonTokenNumber,
+              .value = GetSubBuf(tok->buf, 0, tok->buf_cursor)};
+  } else {
+    SetEof(tok, token);
+  }
+}
+
+static void OnInteger(JsonTokenizer *tok, JsonToken *token) {
+  while (token->type == kJsonTokenUnknown) {
+    if (!HasInput(tok)) {
+      SetNumberOrEof(tok, token);
+      return;
+    }
+
+    u8 ch = TakeInput(tok);
+    switch (ch) {
+      case '0':
+      case '1':
+      case '2':
+      case '3':
+      case '4':
+      case '5':
+      case '6':
+      case '7':
+      case '8':
+      case '9': {
+        if (((u8 *)tok->buf.data)[0] == '0' ||
+            (((u8 *)tok->buf.data)[0] == '-' && tok->buf_cursor == 2 &&
+             ((u8 *)tok->buf.data)[1] == '0')) {
+          ReturnInput(tok);
+          *token = {.type = kJsonTokenNumber,
+                    .value = GetSubBuf(tok->buf, 0, tok->buf_cursor)};
+          tok->state = kJsonTokenizerStateStart;
+        } else {
+          SaveChar(tok, ch);
+        }
+      } break;
+
+      case '.': {
+        SaveChar(tok, ch);
+        tok->state = kJsonTokenizerStateFraction;
+        return;
+      } break;
+
+      case 'e':
+      case 'E': {
+        SaveChar(tok, ch);
+        tok->state = kJsonTokenizerStateExpoinent;
+        return;
+      } break;
+
+      default: {
+        ReturnInput(tok);
+        tok->state = kJsonTokenizerStateNumberEnd;
+        *token = {.type = kJsonTokenNumber,
+                  .value = GetSubBuf(tok->buf, 0, tok->buf_cursor)};
+      } break;
+    }
+  }
+}
+
+static void OnFraction(JsonTokenizer *tok, JsonToken *token) {
+  while (token->type == kJsonTokenUnknown) {
+    if (!HasInput(tok)) {
+      SetNumberOrEof(tok, token);
+      return;
+    }
+
+    u8 ch = TakeInput(tok);
+    switch (ch) {
+      case '0':
+      case '1':
+      case '2':
+      case '3':
+      case '4':
+      case '5':
+      case '6':
+      case '7':
+      case '8':
+      case '9': {
+        SaveChar(tok, ch);
+      } break;
+
+      case 'e':
+      case 'E': {
+        SaveChar(tok, ch);
+        tok->state = kJsonTokenizerStateExpoinent;
+        return;
+      } break;
+
+      default: {
+        ReturnInput(tok);
+        tok->state = kJsonTokenizerStateNumberEnd;
+        *token = {.type = kJsonTokenNumber,
+                  .value = GetSubBuf(tok->buf, 0, tok->buf_cursor)};
+      } break;
+    }
+  }
+}
+
+static void OnExpoinent(JsonTokenizer *tok, JsonToken *token) {
+  while (token->type == kJsonTokenUnknown) {
+    if (!HasInput(tok)) {
+      SetNumberOrEof(tok, token);
+      return;
+    }
+
+    u8 ch = TakeInput(tok);
+    switch (ch) {
+      case '0':
+      case '1':
+      case '2':
+      case '3':
+      case '4':
+      case '5':
+      case '6':
+      case '7':
+      case '8':
+      case '9': {
+        SaveChar(tok, ch);
+      } break;
+
+      case '+':
+      case '-': {
+        SaveChar(tok, ch);
+        tok->state = kJsonTokenizerStateExpoinentNoSign;
+        return;
+      } break;
+
+      default: {
+        ReturnInput(tok);
+        tok->state = kJsonTokenizerStateNumberEnd;
+        *token = {.type = kJsonTokenNumber,
+                  .value = GetSubBuf(tok->buf, 0, tok->buf_cursor)};
+      } break;
+    }
+  }
+}
+
+static void OnExpoinentNoSign(JsonTokenizer *tok, JsonToken *token) {
+  while (token->type == kJsonTokenUnknown) {
+    if (!HasInput(tok)) {
+      SetNumberOrEof(tok, token);
+      return;
+    }
+
+    u8 ch = TakeInput(tok);
+    switch (ch) {
+      case '0':
+      case '1':
+      case '2':
+      case '3':
+      case '4':
+      case '5':
+      case '6':
+      case '7':
+      case '8':
+      case '9': {
+        SaveChar(tok, ch);
+      } break;
+
+      default: {
+        ReturnInput(tok);
+        tok->state = kJsonTokenizerStateNumberEnd;
+        *token = {.type = kJsonTokenNumber,
+                  .value = GetSubBuf(tok->buf, 0, tok->buf_cursor)};
+      } break;
+    }
+  }
+}
+
+static void OnNumberEnd(JsonTokenizer *tok, JsonToken *token) {
+  PopMemory(&tok->arena, tok->buf.data);
+  tok->buf.data = 0;
+  tok->buf.size = 0;
   tok->buf_cursor = 0;
   tok->state = kJsonTokenizerStateStart;
 }
@@ -368,7 +581,7 @@ static void OnStringEnd(JsonTokenizer *tok, JsonToken *token) {
 static bool ExpectChar(JsonTokenizer *tok, JsonToken *token, char expected_ch,
                        u8 next_state) {
   if (!HasInput(tok)) {
-    *token = {.type = kJsonTokenEof};
+    SetEof(tok, token);
     return false;
   }
 
@@ -404,6 +617,26 @@ JsonToken GetNextJsonToken(JsonTokenizer *tok) {
 
       case kJsonTokenizerStateStringEnd: {
         OnStringEnd(tok, &token);
+      } break;
+
+      case kJsonTokenizerStateInteger: {
+        OnInteger(tok, &token);
+      } break;
+
+      case kJsonTokenizerStateFraction: {
+        OnFraction(tok, &token);
+      } break;
+
+      case kJsonTokenizerStateExpoinent: {
+        OnExpoinent(tok, &token);
+      } break;
+
+      case kJsonTokenizerStateExpoinentNoSign: {
+        OnExpoinentNoSign(tok, &token);
+      } break;
+
+      case kJsonTokenizerStateNumberEnd: {
+        OnNumberEnd(tok, &token);
       } break;
 
       case kJsonTokenizerStateT: {

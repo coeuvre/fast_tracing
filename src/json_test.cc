@@ -6,23 +6,28 @@ static void RunJsonTokenizerTest(const char *inputs[], int input_count,
                                  JsonToken tokens[], int token_count) {
   JsonTokenizer tok = InitJsonTokenizer();
   int token_index = 0;
-  for (int i = 0; i < input_count; ++i) {
+  for (int i = 0; i < input_count && IsJsonTokenizerScanning(&tok); ++i) {
     SetJsonTokenizerInput(&tok,
-                          {.data = (u8 *)inputs[i], .size = strlen(inputs[i])});
+                          {.data = (u8 *)inputs[i], .size = strlen(inputs[i])},
+                          i + 1 == input_count);
 
-    JsonToken token = GetNextJsonToken(&tok);
-    switch (token.type) {
-      case kJsonTokenEof: {
-      } break;
+    bool eof = false;
+    while (!eof && IsJsonTokenizerScanning(&tok)) {
+      JsonToken token = GetNextJsonToken(&tok);
+      switch (token.type) {
+        case kJsonTokenEof: {
+          eof = true;
+        } break;
 
-      default: {
-        ASSERT_LT(token_index, token_count);
-        JsonToken *expected_token = &tokens[token_index++];
-        ASSERT_STREQ((char *)token.value.data,
-                     (char *)expected_token->value.data);
-        ASSERT_EQ(token.value.size, expected_token->value.size);
-        ASSERT_EQ(token.type, expected_token->type);
-      } break;
+        default: {
+          ASSERT_LT(token_index, token_count);
+          JsonToken *expected_token = &tokens[token_index++];
+          ASSERT_STREQ((char *)token.value.data,
+                       (char *)expected_token->value.data);
+          ASSERT_EQ(token.value.size, expected_token->value.size);
+          ASSERT_EQ(token.type, expected_token->type);
+        } break;
+      }
     }
   }
 
@@ -33,15 +38,68 @@ static void RunJsonTokenizerTest(const char *inputs[], int input_count,
 }
 
 TEST(JsonTokenizerTest, String) {
-  const char *inputs[] = {" \"a", "b\\", "\\\" "};
+  const char *inputs[] = {
+      " \"a",
+      "b\\",
+      "\\\" ",
+  };
   JsonToken tokens[] = {
       {.type = kJsonTokenString, .value = STR_LITERAL("ab\\")},
   };
   RunJsonTokenizerTest(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens));
 }
 
+TEST(JsonTokenizerTest, StringEof) {
+  const char *inputs[] = {
+      " \"a",
+      " ",
+  };
+  JsonToken tokens[] = {
+      {.type = kJsonTokenError,
+       .value =
+           STR_LITERAL("End of string '\"' expected but reached end of input")},
+  };
+  RunJsonTokenizerTest(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens));
+}
+
+TEST(JsonTokenizerTest, Integer) {
+  const char *inputs[] = {
+      " 1",
+      "2",
+      "3 ",
+  };
+  JsonToken tokens[] = {
+      {.type = kJsonTokenNumber, .value = STR_LITERAL("123")},
+  };
+  RunJsonTokenizerTest(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens));
+}
+
+TEST(JsonTokenizerTest, Fraction) {
+  const char *inputs[] = {
+      " 1.",
+      "2",
+      "3 ",
+  };
+  JsonToken tokens[] = {
+      {.type = kJsonTokenNumber, .value = STR_LITERAL("1.23")},
+  };
+  RunJsonTokenizerTest(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens));
+}
+
+TEST(JsonTokenizerTest, Exponent) {
+  const char *inputs[] = {" 1e", "2", "3 4", "E56"};
+  JsonToken tokens[] = {
+      {.type = kJsonTokenNumber, .value = STR_LITERAL("1e23")},
+      {.type = kJsonTokenNumber, .value = STR_LITERAL("4E56")},
+  };
+  RunJsonTokenizerTest(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens));
+}
+
 TEST(JsonTokenizerTest, ObjectBeginEnd) {
-  const char *inputs[] = {"{", "}"};
+  const char *inputs[] = {
+      "{",
+      "}",
+  };
   JsonToken tokens[] = {
       {.type = kJsonTokenObjectStart},
       {.type = kJsonTokenObjectEnd},
@@ -50,7 +108,10 @@ TEST(JsonTokenizerTest, ObjectBeginEnd) {
 }
 
 TEST(JsonTokenizerTest, ArrayBeginEnd) {
-  const char *inputs[] = {" [", "] "};
+  const char *inputs[] = {
+      " [",
+      "] ",
+  };
   JsonToken tokens[] = {
       {.type = kJsonTokenArrayStart},
       {.type = kJsonTokenArrayEnd},
@@ -59,7 +120,10 @@ TEST(JsonTokenizerTest, ArrayBeginEnd) {
 }
 
 TEST(JsonTokenizerTest, Colon) {
-  const char *inputs[] = {" ", ": "};
+  const char *inputs[] = {
+      " ",
+      ": ",
+  };
   JsonToken tokens[] = {
       {.type = kJsonTokenColon},
   };

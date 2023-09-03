@@ -2,6 +2,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <chrono>
+
+#include "src/json.h"
 #include "tools/common.h"
 
 const char *kUsage = R"(parser_bench
@@ -53,37 +56,6 @@ static Args ParseArgs(int argc, char *argv[]) {
   return args;
 }
 
-struct JsonTokenizer {
-  Buf input;
-  bool has_error;
-};
-
-static bool IsScanning(JsonTokenizer *tok) { return !tok->has_error; }
-
-static void SetInput(JsonTokenizer *tok, Buf input) { tok->input = input; }
-
-enum JsonTokenType {
-  kJsonTokenError,
-  kJsonTokenEof,
-};
-
-struct JsonToken {
-  JsonTokenType type;
-  union {
-    Buf error;
-    Buf string;
-    Buf number;
-  };
-};
-
-static JsonToken GetJsonToken(JsonTokenizer *tok) {
-  JsonToken token = {};
-  if (token.type == kJsonTokenError) {
-    tok->has_error = true;
-  }
-  return token;
-}
-
 struct File {
   Buf path;
   FILE *handle;
@@ -124,7 +96,7 @@ static int Run(Args args) {
   ASSERT(args.file.data);
   int result = 0;
 
-  JsonTokenizer tok = {};
+  JsonTokenizer tok = InitJsonTokenizer();
 
   const usize kBufCap = 4096;
   u8 buf_[kBufCap];
@@ -132,32 +104,44 @@ static int Run(Args args) {
 
   File file = OpenFile(args.file);
   if (file.handle) {
-    while (IsScanning(&tok)) {
+    auto start = std::chrono::high_resolution_clock::now();
+    usize nparsed = 0;
+
+    while (IsJsonTokenizerScanning(&tok)) {
       usize nread = ReadFile(&file, buf);
-      if (nread == 0) {
-        break;
-      }
+      nparsed += nread;
+      bool last_input = nread == 0;
+      SetJsonTokenizerInput(&tok, GetSubBuf(buf, 0, nread), last_input);
 
-      SetInput(&tok, GetSubBuf(buf, 0, nread));
-      bool done = false;
-      while (!done) {
-        JsonToken token = GetJsonToken(&tok);
+      bool eof = false;
+      while (!eof) {
+        JsonToken token = GetNextJsonToken(&tok);
         switch (token.type) {
-          case kJsonTokenError:
-            fprintf(stderr, "JSON error: %.*s\n", (int)token.error.size,
-                    (char *)token.error.data);
-            done = true;
-            break;
+          case kJsonTokenError: {
+            fprintf(stderr, "JSON error: %.*s\n", (int)token.value.size,
+                    (char *)token.value.data);
+            eof = true;
+          } break;
 
-          case kJsonTokenEof:
-            done = true;
-            break;
+          case kJsonTokenEof: {
+            eof = true;
+          } break;
 
-          default:
-            UNREACHABLE;
+          default: {
+          } break;
         }
       }
     }
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration =
+        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    duration.count();
+    f64 speed =
+        (f64)nparsed / (f64)duration.count() * 1024.0 * 1024.0 / 1'000'000;
+    fprintf(stdout, "Speed: %.2f MB/s\n", speed);
+
+    DeinitJsonTokenizer(&tok);
 
     CloseFile(&file);
   } else {

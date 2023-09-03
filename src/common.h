@@ -15,7 +15,7 @@
 #endif  // NDEBUG
 
 #define ASSERT(e) assert(e)
-#define UNREACHABLE ASSERT("unreachable" && false)
+#define UNREACHABLE ASSERT(0 && "unreachable")
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 

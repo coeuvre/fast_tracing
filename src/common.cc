@@ -186,7 +186,7 @@ void FreeMemory(MemoryArena *arena, void *data) {
 void ClearMemoryArena(MemoryArena *arena) {
   MemoryBlock *block = arena->head;
   while (block) {
-    block->cursor = 0;
+    block->cursor = sizeof(MemoryBlock);
     block = block->next;
   }
   arena->current = arena->head;
