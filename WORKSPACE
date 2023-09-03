@@ -20,7 +20,7 @@ http_archive(
     sha256 = "5049c9d44280dcda1921c79dc054fe7a82aecebb8f27d2f933494069323d60ca",
     strip_prefix = "imgui-f8704cd085c4347f835c21dc12a3951924143872",
     url = "https://github.com/ocornut/imgui/archive/f8704cd085c4347f835c21dc12a3951924143872.tar.gz",
-    build_file = "@//third_party/imgui:BUILD",
+    build_file = "//third_party:imgui/imgui.BUILD",
 )
 
 http_archive(

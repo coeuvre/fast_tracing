@@ -17,6 +17,9 @@ enum JsonTokenType {
   kJsonTokenArrayStart,
   kJsonTokenArrayEnd,
 
+  kJsonTokenColon,
+  kJsonTokenComma,
+
   kJsonTokenTrue,
   kJsonTokenFalse,
   kJsonTokenNull,

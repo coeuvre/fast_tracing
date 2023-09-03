@@ -1,6 +1,10 @@
 #include "src/json.h"
 
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
+
+static const usize kJsonErrorMessageSize = 1024;
 
 enum {
   kJsonTokenizerStateError,
@@ -12,6 +16,17 @@ enum {
   // kJsonTokenizerStateStringEscapeU2,
   // kJsonTokenizerStateStringEscapeU3,
   kJsonTokenizerStateStringEnd,
+  kJsonTokenizerStateInteger,
+  kJsonTokenizerStateT,
+  kJsonTokenizerStateTr,
+  kJsonTokenizerStateTru,
+  kJsonTokenizerStateF,
+  kJsonTokenizerStateFa,
+  kJsonTokenizerStateFal,
+  kJsonTokenizerStateFals,
+  kJsonTokenizerStateN,
+  kJsonTokenizerStateNu,
+  kJsonTokenizerStateNul,
 };
 
 JsonTokenizer InitJsonTokenizer() {
@@ -36,6 +51,22 @@ void SetJsonTokenizerInput(JsonTokenizer *tok, Buf input) {
   tok->cursor = 0;
 }
 
+static void SetError(JsonTokenizer *tok, JsonToken *token, const char *fmt,
+                     ...) {
+  ClearMemoryArena(&tok->arena);
+
+  usize buf_size = kJsonErrorMessageSize;
+  char *buf = (char *)PushMemory(&tok->arena, buf_size);
+
+  va_list va;
+  va_start(va, fmt);
+  vsnprintf(buf, buf_size, fmt, va);
+  va_end(va);
+
+  tok->state = kJsonTokenizerStateError;
+  *token = {.type = kJsonTokenError, .value = {.data = buf, .size = buf_size}};
+}
+
 static inline bool HasInput(JsonTokenizer *tok) {
   return tok->cursor < tok->input.size;
 }
@@ -55,6 +86,22 @@ static void SkipWhitespace(JsonTokenizer *tok) {
   }
 }
 
+const usize kJsonTokenizerBufInitialSize = 1024;
+
+static inline void SaveChar(JsonTokenizer *tok, u8 ch) {
+  ASSERT(tok->buf_cursor <= tok->buf.size);
+
+  while ((tok->buf_cursor + 1) >= tok->buf.size) {
+    tok->buf.size = Max(kJsonTokenizerBufInitialSize, tok->buf.size * 2);
+    tok->buf.data = PushMemory(&tok->arena, tok->buf.data, tok->buf.size);
+  }
+
+  ASSERT((tok->buf_cursor + 1) < tok->buf.size);
+  ((u8 *)tok->buf.data)[tok->buf_cursor++] = ch;
+  // Be compatible with C strings
+  ((u8 *)tok->buf.data)[tok->buf_cursor] = 0;
+}
+
 static void OnStart(JsonTokenizer *tok, JsonToken *token) {
   SkipWhitespace(tok);
 
@@ -63,10 +110,27 @@ static void OnStart(JsonTokenizer *tok, JsonToken *token) {
     return;
   }
 
-  switch (TakeInput(tok)) {
+  char ch = TakeInput(tok);
+  switch (ch) {
     case '"': {
-      tok->state = kJsonTokenizerStateString;
       ASSERT(tok->buf_cursor == 0);
+      tok->state = kJsonTokenizerStateString;
+    } break;
+
+    case '-':
+    case '0':
+    case '1':
+    case '2':
+    case '3':
+    case '4':
+    case '5':
+    case '6':
+    case '7':
+    case '8':
+    case '9': {
+      ASSERT(tok->buf_cursor == 0);
+      tok->state = kJsonTokenizerStateInteger;
+      SaveChar(tok, ch);
     } break;
 
     case '[': {
@@ -85,28 +149,31 @@ static void OnStart(JsonTokenizer *tok, JsonToken *token) {
       *token = {.type = kJsonTokenObjectEnd};
     } break;
 
+    case ':': {
+      *token = {.type = kJsonTokenColon};
+    } break;
+
+    case ',': {
+      *token = {.type = kJsonTokenComma};
+    } break;
+
+    case 't': {
+      tok->state = kJsonTokenizerStateT;
+    } break;
+
+    case 'f': {
+      tok->state = kJsonTokenizerStateF;
+    } break;
+
+    case 'n': {
+      tok->state = kJsonTokenizerStateN;
+    } break;
+
     default: {
       tok->state = kJsonTokenizerStateError;
-      *token = {.type = kJsonTokenError,
-                .value = STR_LITERAL("Unexpected character")};
+      SetError(tok, token, "JSON value expected but got '%c'", ch);
     } break;
   }
-}
-
-const usize kJsonTokenizerBufInitialSize = 1024;
-
-static inline void SaveChar(JsonTokenizer *tok, u8 ch) {
-  // TODO: Grow buffer
-  ASSERT(tok->buf_cursor <= tok->buf.size);
-
-  while ((tok->buf_cursor + 1) >= tok->buf.size) {
-    tok->buf.size = Max(kJsonTokenizerBufInitialSize, tok->buf.size * 2);
-    tok->buf.data = PushMemory(&tok->arena, tok->buf.data, tok->buf.size);
-  }
-
-  ASSERT((tok->buf_cursor + 1) < tok->buf.size);
-  ((u8 *)tok->buf.data)[tok->buf_cursor++] = ch;
-  ((u8 *)tok->buf.data)[tok->buf_cursor] = 0;
 }
 
 static void OnString(JsonTokenizer *tok, JsonToken *token) {
@@ -183,8 +250,7 @@ static void OnStringEscape(JsonTokenizer *tok, JsonToken *token) {
 
     default: {
       tok->state = kJsonTokenizerStateError;
-      *token = {.type = kJsonTokenError,
-                .value = STR_LITERAL("Unexpected escape character")};
+      SetError(tok, token, "Invalid escape character '\\%c'", ch);
     } break;
   }
 }
@@ -294,8 +360,27 @@ static void OnStringEscape(JsonTokenizer *tok, JsonToken *token) {
 // }
 
 static void OnStringEnd(JsonTokenizer *tok, JsonToken *token) {
+  PopMemory(&tok->arena, tok->buf.data);
   tok->buf_cursor = 0;
   tok->state = kJsonTokenizerStateStart;
+}
+
+static bool ExpectChar(JsonTokenizer *tok, JsonToken *token, char expected_ch,
+                       u8 next_state) {
+  if (!HasInput(tok)) {
+    *token = {.type = kJsonTokenEof};
+    return false;
+  }
+
+  u8 ch = TakeInput(tok);
+  if (ch == expected_ch) {
+    tok->state = next_state;
+    return true;
+  }
+
+  tok->state = kJsonTokenizerStateError;
+  SetError(tok, token, "Expected '%c' but got '%c'", expected_ch, ch);
+  return false;
 }
 
 JsonToken GetNextJsonToken(JsonTokenizer *tok) {
@@ -319,6 +404,52 @@ JsonToken GetNextJsonToken(JsonTokenizer *tok) {
 
       case kJsonTokenizerStateStringEnd: {
         OnStringEnd(tok, &token);
+      } break;
+
+      case kJsonTokenizerStateT: {
+        ExpectChar(tok, &token, 'r', kJsonTokenizerStateTr);
+      } break;
+
+      case kJsonTokenizerStateTr: {
+        ExpectChar(tok, &token, 'u', kJsonTokenizerStateTru);
+      } break;
+
+      case kJsonTokenizerStateTru: {
+        if (ExpectChar(tok, &token, 'e', kJsonTokenizerStateStart)) {
+          token.type = kJsonTokenTrue;
+        }
+      } break;
+
+      case kJsonTokenizerStateF: {
+        ExpectChar(tok, &token, 'a', kJsonTokenizerStateFa);
+      } break;
+
+      case kJsonTokenizerStateFa: {
+        ExpectChar(tok, &token, 'l', kJsonTokenizerStateFal);
+      } break;
+
+      case kJsonTokenizerStateFal: {
+        ExpectChar(tok, &token, 's', kJsonTokenizerStateFals);
+      } break;
+
+      case kJsonTokenizerStateFals: {
+        if (ExpectChar(tok, &token, 'e', kJsonTokenizerStateStart)) {
+          token.type = kJsonTokenFalse;
+        }
+      } break;
+
+      case kJsonTokenizerStateN: {
+        ExpectChar(tok, &token, 'u', kJsonTokenizerStateNu);
+      } break;
+
+      case kJsonTokenizerStateNu: {
+        ExpectChar(tok, &token, 'l', kJsonTokenizerStateNul);
+      } break;
+
+      case kJsonTokenizerStateNul: {
+        if (ExpectChar(tok, &token, 'l', kJsonTokenizerStateStart)) {
+          token.type = kJsonTokenNull;
+        }
       } break;
 
       default:

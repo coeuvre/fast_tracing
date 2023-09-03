@@ -12,7 +12,7 @@ TEST(MemoryArenaTest, SingleBlock) {
 
   PopMemory(&arena, data);
   ASSERT_EQ(arena.num_blocks, 1);
-  ASSERT_EQ(arena.current->cursor, 0);
+  ASSERT_EQ(arena.current, nullptr);
 
   DeinitMemoryArena(&arena);
 }
@@ -27,7 +27,7 @@ TEST(MemoryArenaTest, MultipleBlocks) {
   ASSERT_NE(arena.current, arena.head);
   ASSERT_EQ(arena.current, arena.tail);
   ASSERT_GT(arena.current->size, arena.min_block_size + 1);
-  ASSERT_EQ(arena.current->cursor, arena.current->size);
+  ASSERT_LE(arena.current->cursor, arena.current->size);
 
   PopMemory(&arena, data);
   ASSERT_EQ(arena.num_blocks, 2);
@@ -36,7 +36,7 @@ TEST(MemoryArenaTest, MultipleBlocks) {
   DeinitMemoryArena(&arena);
 }
 
-TEST(MemoryArenaTest, PushMemoryReuseData) {
+TEST(MemoryArenaTest, ReuseData) {
   MemoryArena arena = InitMemoryArena();
 
   void *data = PushMemory(&arena, 1);
@@ -47,18 +47,18 @@ TEST(MemoryArenaTest, PushMemoryReuseData) {
   DeinitMemoryArena(&arena);
 }
 
-TEST(MemoryArenaTest, PushMemoryPopAndPushNewBlock) {
+TEST(MemoryArenaTest, PopAndPushNewBlock) {
   MemoryArena arena = InitMemoryArena();
 
   void *data = PushMemory(&arena, arena.min_block_size);
   ((u8 *)data)[0] = 0xCC;
-  void *new_data = PushMemory(&arena, data, arena.min_block_size + 1);
+  void *new_data = PushMemory(&arena, data, arena.min_block_size << 1);
 
   ASSERT_NE(data, new_data);
   ASSERT_EQ(((u8 *)new_data)[0], 0xCC);
   ASSERT_EQ(arena.num_blocks, 2);
   ASSERT_EQ(arena.current, arena.tail);
-  ASSERT_EQ(arena.head->cursor, 0);
+  ASSERT_EQ(arena.head->cursor, sizeof(MemoryBlock));
 
   DeinitMemoryArena(&arena);
 }

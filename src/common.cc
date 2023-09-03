@@ -27,15 +27,23 @@ Buf GetSubBuf(Buf buf, usize start, usize end) {
 }
 
 struct MemoryHeader {
-  usize offset;
+  usize prev;
+  // sizeof(MemoryHeader) + sizeof(data)
   usize size;
 };
 
+static inline MemoryHeader *GetHeader(MemoryBlock *block, usize offset) {
+  ASSERT(offset >= sizeof(MemoryBlock) && offset < block->size);
+  return (MemoryHeader *)((u8 *)block + offset);
+}
+
 static MemoryBlock *PushBlock(MemoryArena *arena, usize block_size) {
-  MemoryBlock *block = (MemoryBlock *)malloc(sizeof(MemoryBlock) + block_size);
+  MemoryBlock *block = (MemoryBlock *)malloc(block_size);
   ASSERT(block);
   block->size = block_size;
-  block->cursor = 0;
+  block->cursor = sizeof(MemoryBlock);
+  MemoryHeader *header = GetHeader(block, block->cursor);
+  header->prev = block->cursor;
 
   block->next = 0;
   block->prev = arena->tail;
@@ -68,8 +76,11 @@ void DeinitMemoryArena(MemoryArena *arena) {
 }
 
 static void EnsureCurrentBlock(MemoryArena *arena, usize size) {
-  MemoryBlock *block = arena->current;
+  if (!arena->current) {
+    arena->current = arena->head;
+  }
 
+  MemoryBlock *block = arena->current;
   while (block) {
     if (block->cursor + size <= block->size) {
       break;
@@ -78,7 +89,15 @@ static void EnsureCurrentBlock(MemoryArena *arena, usize size) {
   }
 
   if (!block) {
-    block = PushBlock(arena, Max(size, arena->min_block_size));
+    usize block_size = arena->min_block_size;
+    if (block && block->prev) {
+      block_size = block->prev->size << 1;
+    }
+    while ((block_size - sizeof(MemoryBlock)) <= size) {
+      block_size <<= 1;
+    }
+    ASSERT(IsPowerOfTwo(block_size));
+    block = PushBlock(arena, block_size);
   }
 
   arena->current = block;
@@ -93,10 +112,12 @@ void *PushMemory(MemoryArena *arena, usize size) {
   MemoryBlock *block = arena->current;
   ASSERT(block && block->cursor + total_size <= block->size);
 
-  MemoryHeader *header =
-      (MemoryHeader *)((u8 *)(block + 1) + block->cursor);
-  header->offset = block->cursor;
+  MemoryHeader *header = GetHeader(block, block->cursor);
   header->size = total_size;
+
+  MemoryHeader *next_header = GetHeader(block, block->cursor + total_size);
+  next_header->prev = block->cursor;
+  next_header->size = 0;
 
   block->cursor += total_size;
 
@@ -111,43 +132,55 @@ void *PushMemory(MemoryArena *arena, void *data, usize new_size) {
   }
 
   MemoryHeader *header = (MemoryHeader *)data - 1;
-  MemoryBlock *block =
-      (MemoryBlock *)((u8 *)header - header->offset - sizeof(MemoryBlock));
+  usize total_size = header->size;
 
-  usize new_total_size = sizeof(MemoryHeader) + new_size;
-  // data is the last allocation in the arena
-  if (arena->current == block &&
-      header->offset + header->size == block->cursor) {
-    if (header->offset + new_total_size <= block->size) {
-      block->cursor = header->offset + new_total_size;
-      header->size = new_total_size;
-      return data;
-    }
-
-    // Remaining space in the block is not enough, fall back to new allocation
-    PopMemory(arena, data);
-  }
-
+  FreeMemory(arena, data);
   void *new_data = PushMemory(arena, new_size);
-  memcpy(new_data, data, header->size - sizeof(MemoryHeader));
+  if (new_data != data) {
+    memcpy(new_data, data, total_size - sizeof(MemoryHeader));
+  }
   return new_data;
 }
 
 void PopMemory(MemoryArena *arena, void *data) {
   ASSERT(data);
-  MemoryHeader *header = (MemoryHeader *)data - 1;
-  MemoryBlock *block =
-      (MemoryBlock *)((u8 *)header - header->offset - sizeof(MemoryBlock));
+  ASSERT(arena->current);
 
-  ASSERT(arena->current == block);
-  ASSERT(header->offset + header->size == block->cursor &&
+  MemoryHeader *header = (MemoryHeader *)data - 1;
+  MemoryBlock *block = arena->current;
+  MemoryHeader *next_header = GetHeader(block, block->cursor);
+
+  ASSERT((u8 *)header + header->size == (u8 *)next_header &&
          "Current allocation must be the top one");
 
-  block->cursor = header->offset;
+  FreeMemory(arena, data);
+}
 
-  if (block->cursor == 0 && block->prev) {
-    arena->current = block->prev;
+static void MaybeShrink(MemoryArena *arena) {
+  while (arena->current) {
+    MemoryBlock *block = arena->current;
+    MemoryHeader *header = GetHeader(block, block->cursor);
+    MemoryHeader *prev_header = GetHeader(block, header->prev);
+    if (prev_header->size == 0) {
+      block->cursor = header->prev;
+      if (block->cursor == sizeof(MemoryBlock)) {
+        arena->current = block->prev;
+      }
+    } else {
+      break;
+    }
   }
+}
+
+void FreeMemory(MemoryArena *arena, void *data) {
+  if (!data) {
+    return;
+  }
+
+  MemoryHeader *header = (MemoryHeader *)data - 1;
+  header->size = 0;
+
+  MaybeShrink(arena);
 }
 
 void ClearMemoryArena(MemoryArena *arena) {

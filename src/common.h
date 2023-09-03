@@ -43,6 +43,11 @@ inline T Max(T lhs, T rhs) {
   return lhs > rhs ? lhs : rhs;
 }
 
+template <typename T>
+inline bool IsPowerOfTwo(T x) {
+  return x && !(x & (x - 1));
+}
+
 struct Buf {
   void *data;
   usize size;
@@ -57,6 +62,7 @@ Buf GetSubBuf(Buf buf, usize start, usize end);
 struct MemoryBlock {
   MemoryBlock *prev;
   MemoryBlock *next;
+  // Total allocated size, including this header
   usize size;
   usize cursor;
 };
@@ -76,6 +82,7 @@ void *PushMemory(MemoryArena *arena, usize size);
 // Like realloc, reuses the same pointer and extends its capacity if possible
 void *PushMemory(MemoryArena *arena, void *data, usize new_size);
 void PopMemory(MemoryArena *arena, void *data);
+void FreeMemory(MemoryArena *arena, void *data);
 
 void ClearMemoryArena(MemoryArena *arena);
 
