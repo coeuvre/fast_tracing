@@ -1,53 +1,52 @@
-#ifndef FAST_TRACING_SRC_JSON_H
-#define FAST_TRACING_SRC_JSON_H
+#pragma once
 
-#include "src/common.h"
+#include "src/buf.h"
+#include "src/defs.h"
+#include "src/memory.h"
 
 enum JsonTokenType {
-  kJsonTokenUnknown,
-  kJsonTokenError,
-  kJsonTokenEof,
+    JsonToken_Unknown,
+    JsonToken_Error,
+    JsonToken_Eof,
 
-  kJsonTokenString,
-  kJsonTokenNumber,
+    JsonToken_String,
+    JsonToken_Number,
 
-  kJsonTokenObjectStart,
-  kJsonTokenObjectEnd,
+    JsonToken_ObjectStart,
+    JsonToken_ObjectEnd,
 
-  kJsonTokenArrayStart,
-  kJsonTokenArrayEnd,
+    JsonToken_ArrayStart,
+    JsonToken_ArrayEnd,
 
-  kJsonTokenColon,
-  kJsonTokenComma,
+    JsonToken_Colon,
+    JsonToken_Comma,
 
-  kJsonTokenTrue,
-  kJsonTokenFalse,
-  kJsonTokenNull,
+    JsonToken_True,
+    JsonToken_False,
+    JsonToken_Null,
 };
 
 struct JsonToken {
-  JsonTokenType type;
-  Buf value;
+    JsonTokenType type;
+    Buf value;
 };
 
 struct JsonTokenizer {
-  MemoryArena arena;
+    MemoryArena arena;
 
-  Buf buf;
-  usize buf_cursor;
-  u8 state;
+    Buf buf;
+    usize buf_cursor;
+    u8 state;
 
-  Buf input;
-  usize cursor;
-  bool last_input;
+    Buf input;
+    usize cursor;
+    bool last_input;
 };
 
-JsonTokenizer InitJsonTokenizer();
-void DeinitJsonTokenizer(JsonTokenizer *tok);
+JsonTokenizer json_init_tok();
+void json_deinit_tok(JsonTokenizer *tok);
 
-bool IsJsonTokenizerScanning(JsonTokenizer *tok);
-void SetJsonTokenizerInput(JsonTokenizer *tok, Buf input, bool last_input);
+bool json_is_scanning(JsonTokenizer *tok);
+void json_set_input(JsonTokenizer *tok, Buf input, bool last_input);
 
-JsonToken GetNextJsonToken(JsonTokenizer *tok);
-
-#endif  // FAST_TRACING_SRC_JSON_H
+JsonToken json_get_next_token(JsonTokenizer *tok);

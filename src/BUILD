@@ -5,15 +5,15 @@ load("@emsdk//emscripten_toolchain:wasm_rules.bzl", "wasm_cc_binary")
 
 cc_library(
     name = "common",
-    hdrs = ["common.h"],
-    srcs = ["common.cc"],
+    hdrs = ["defs.h", "memory.h", "buf.h"],
+    srcs = ["buf.cc", "memory.cc"],
     linkstatic = True,
 )
 
 cc_test(
     name = "common_test",
     size = "small",
-    srcs = ["common_test.cc"],
+    srcs = ["memory_test.cc"],
     deps = [
       ":common",
       "@com_google_googletest//:gtest_main",

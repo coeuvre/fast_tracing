@@ -1,9 +1,6 @@
-#ifndef FAST_TRACING_TOOLS_COMMON_H_
-#define FAST_TRACING_TOOLS_COMMON_H_
+#pragma once
 
-#include "src/common.h"
+#include "src/buf.h"
 
 // Split arg into a (key, value) pair.
-void SplitArg(char *arg, Buf *out_key, Buf *out_value);
-
-#endif // FAST_TRACING_TOOLS_COMMON_H_
+void split_arg(char *arg, Buf *out_key, Buf *out_value);
