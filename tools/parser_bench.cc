@@ -88,6 +88,7 @@ bool json_input_fetch(void *ctx_, MemoryArena *arena, Buf *buf,
         return false;
     }
     *buf = ctx->content;
+    ctx->eof = true;
     return true;
 }
 
@@ -114,6 +115,11 @@ static int run(Args args) {
     JsonToken token;
     JsonError error;
     while (json_scan(&arena, &input, &token, &error)) {
+        memory_arena_clear(&arena);
+    }
+
+    if (error.has_error) {
+        printf("Error: %.*s\n", (int)error.message.size, error.message.data);
     }
 
     auto end = std::chrono::high_resolution_clock::now();
