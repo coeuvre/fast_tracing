@@ -36,10 +36,8 @@ static MemoryBlock *push_block(MemoryArena *arena, usize block_size) {
 
 static const usize MIN_BLOCK_SIZE = 4096;
 
-MemoryArena memory_arena_init() {
-    MemoryArena arena = {};
-    arena.min_block_size = MIN_BLOCK_SIZE;
-    return arena;
+void memory_arena_init(MemoryArena *arena) {
+    *arena = {.min_block_size = MIN_BLOCK_SIZE};
 }
 
 void memory_arena_deinit(MemoryArena *arena) {
@@ -80,7 +78,7 @@ static void ensure_current_block_size(MemoryArena *arena, usize size) {
     arena->current = block;
 }
 
-void *memory_arena_push(MemoryArena *arena, usize size) {
+void *memory_arena_alloc(MemoryArena *arena, usize size) {
     ASSERT(size > 0);
 
     usize total_size = sizeof(MemoryHeader) + size;
@@ -103,34 +101,20 @@ void *memory_arena_push(MemoryArena *arena, usize size) {
     return data;
 }
 
-void *memory_arena_push(MemoryArena *arena, void *data, usize new_size) {
+void *memory_arena_realloc(MemoryArena *arena, void *data, usize new_size) {
     if (!data) {
-        return memory_arena_push(arena, new_size);
+        return memory_arena_alloc(arena, new_size);
     }
 
     MemoryHeader *header = (MemoryHeader *)data - 1;
     usize total_size = header->size;
 
     memory_arena_free(arena, data);
-    void *new_data = memory_arena_push(arena, new_size);
+    void *new_data = memory_arena_alloc(arena, new_size);
     if (new_data != data) {
         memcpy(new_data, data, total_size - sizeof(MemoryHeader));
     }
     return new_data;
-}
-
-void memory_arena_pop(MemoryArena *arena, void *data) {
-    ASSERT(data);
-    ASSERT(arena->current);
-
-    MemoryHeader *header = (MemoryHeader *)data - 1;
-    MemoryBlock *block = arena->current;
-    MemoryHeader *next_header = get_header(block, block->cursor);
-
-    ASSERT((u8 *)header + header->size == (u8 *)next_header &&
-           "Current allocation must be the top one");
-
-    memory_arena_free(arena, data);
 }
 
 static void maybe_shrink(MemoryArena *arena) {

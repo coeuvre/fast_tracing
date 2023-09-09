@@ -1,143 +1,554 @@
 #include "src/json.h"
 
+#include <memory.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+void json_input_init(JsonInput *input, void *ctx, JsonInputFn_Fetch *fetch) {
+    *input = {
+        .ctx = ctx,
+        .fetch = fetch,
+    };
+}
+
 static const usize ERROR_MESSAGE_SIZE = 1024;
 
-enum {
-    State_Error,
-    State_Start,
-    State_Done,
-    State_String,
-    State_Escape,
-    State_EscapeU0,
-    State_EscapeU1,
-    State_EscapeU2,
-    State_EscapeU3,
-    State_StringEnd,
-    State_Integer,
-    State_Fraction,
-    State_Expoinent,
-    State_ExpoinentNoSign,
-    State_NumberEnd,
-    State_T,
-    State_Tr,
-    State_Tru,
-    State_F,
-    State_Fa,
-    State_Fal,
-    State_Fals,
-    State_N,
-    State_Nu,
-    State_Nul,
-};
-
-JsonTokenizer json_init_tok() {
-    JsonTokenizer tok = {};
-    tok.arena = memory_arena_init();
-    tok.state = State_Start;
-    return tok;
-}
-
-void json_deinit_tok(JsonTokenizer *tok) {
-    memory_arena_deinit(&tok->arena);
-    *tok = {};
-}
-
-bool json_is_scanning(JsonTokenizer *tok) {
-    return tok->state != State_Error && tok->state != State_Done;
-}
-
-void json_set_input(JsonTokenizer *tok, Buf input, bool last_input) {
-    ASSERT(tok->cursor == tok->input.size &&
-           "Last input was not fully consumed");
-    tok->input = input;
-    tok->last_input = last_input;
-    tok->cursor = 0;
-}
-
-static void set_error(JsonTokenizer *tok, JsonToken *token, const char *fmt,
-                      ...) {
-    memory_arena_clear(&tok->arena);
-
+static bool set_error(MemoryArena *arena, JsonToken *token, JsonError *error,
+                      const char *fmt, ...) {
     usize buf_size = ERROR_MESSAGE_SIZE;
-    char *buf = (char *)memory_arena_push(&tok->arena, buf_size);
+    char *buf = (char *)memory_arena_alloc(arena, buf_size);
 
     va_list va;
     va_start(va, fmt);
     usize nwritten = vsnprintf(buf, buf_size, fmt, va);
     va_end(va);
 
-    tok->state = State_Error;
-    *token = {
-        .type = JsonToken_Error,
-        .value = {.data = buf, .size = min(buf_size, nwritten)},
-    };
+    *token = {.type = JsonToken_Eof};
+    *error = {.has_error = true,
+              .message = {.data = (u8 *)buf, .size = nwritten}};
+
+    return false;
 }
 
-static inline bool has_input(JsonTokenizer *tok) {
-    return tok->cursor < tok->input.size;
-}
+// Returns false if there is no more input or an error occurred
+static inline bool take_input(MemoryArena *arena, JsonInput *input,
+                              JsonToken *token, JsonError *error, u8 *ch) {
+    if (input->cursor < input->buf.size) {
+        *ch = ((u8 *)input->buf.data)[input->cursor++];
+        return true;
+    }
 
-static inline u8 take_input(JsonTokenizer *tok) {
-    ASSERT(has_input(tok));
-    return ((u8 *)tok->input.data)[tok->cursor++];
-}
+    ASSERT(input->cursor == input->buf.size);
 
-static inline void return_input(JsonTokenizer *tok) {
-    ASSERT(tok->cursor > 0);
-    tok->cursor--;
-}
-
-static void skip_whitespace(JsonTokenizer *tok) {
-    while (tok->cursor < tok->input.size) {
-        u8 c = ((u8 *)tok->input.data)[tok->cursor];
-        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+    while (true) {
+        input->cursor = 0;
+        *error = {};
+        if (!(input->fetch(input->ctx, arena, &input->buf, error))) {
+            *token = {.type = JsonToken_Eof};
+            *ch = 0;
+            return false;
+        }
+        if (input->buf.size > 0) {
             break;
         }
-        tok->cursor++;
+    }
+
+    if (input->buf.size == 0) {
+        *ch = 0;
+        *token = {.type = JsonToken_Eof};
+        return false;
+    }
+
+    *ch = input->buf.data[input->cursor++];
+    return true;
+}
+
+static inline void return_input(JsonInput *input) {
+    ASSERT(input->cursor > 0);
+    input->cursor--;
+}
+
+static bool skip_whitespace(MemoryArena *arena, JsonInput *input,
+                            JsonToken *token, JsonError *error) {
+    while (true) {
+        u8 c;
+        if (!take_input(arena, input, token, error, &c)) {
+            return false;
+        }
+
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+            return_input(input);
+            return true;
+        }
     }
 }
 
 const usize BUF_SIZE = 1024;
 
-static inline void save_char(JsonTokenizer *tok, u8 ch) {
-    ASSERT(tok->buf_cursor <= tok->buf.size);
-
-    while ((tok->buf_cursor + 1) >= tok->buf.size) {
-        tok->buf.size = max(BUF_SIZE, tok->buf.size * 2);
-        tok->buf.data =
-            memory_arena_push(&tok->arena, tok->buf.data, tok->buf.size);
+static bool expect(MemoryArena *arena, JsonInput *input, JsonToken *token,
+                   JsonError *error, Buf expected) {
+    for (usize i = 0; i < expected.size; ++i) {
+        u8 expected_ch = expected.data[i];
+        u8 actual_ch;
+        if (!take_input(arena, input, token, error, &actual_ch)) {
+            return false;
+        }
+        if (actual_ch != expected_ch) {
+            return false;
+        }
     }
-
-    ASSERT((tok->buf_cursor + 1) < tok->buf.size);
-    ((u8 *)tok->buf.data)[tok->buf_cursor++] = ch;
-    // Be compatible with C strings
-    ((u8 *)tok->buf.data)[tok->buf_cursor] = 0;
+    return true;
 }
 
-static void set_eof(JsonTokenizer *tok, JsonToken *token) {
-    *token = {.type = JsonToken_Eof};
-    if (tok->last_input) {
-        tok->state = State_Done;
+static void save_buf(MemoryArena *arena, Buf *buf, usize *buf_cursor,
+                     Buf data) {
+    if (!buf->data) {
+        ASSERT(*buf_cursor == 0);
+        ASSERT(is_power_of_two(BUF_SIZE));
+        buf->size = BUF_SIZE;
+        buf->data = (u8 *)memory_arena_alloc(arena, buf->size);
+        ASSERT(buf->data);
+    }
+
+    while (*buf_cursor + data.size >= buf->size) {
+        buf->size <<= 1;
+        buf->data = (u8 *)memory_arena_realloc(arena, buf->data, buf->size);
+        ASSERT(buf->data);
+    }
+
+    memcpy(buf->data + *buf_cursor, data.data, data.size);
+    *buf_cursor += data.size;
+}
+
+static bool take_and_save_input(MemoryArena *arena, JsonInput *input,
+                                JsonToken *token, JsonError *error, u8 *ch,
+                                Buf *buf, usize *buf_cursor, usize *start) {
+    if (input->cursor == input->buf.size) {
+        save_buf(arena, buf, buf_cursor,
+                 buf_slice(input->buf, *start, input->cursor));
+        *start = 0;
+    }
+
+    if (!take_input(arena, input, token, error, ch)) {
+        return false;
+    }
+
+    return true;
+}
+
+static void return_saved_input(JsonInput *input, Buf *buf) {
+    return_input(input);
+    if (buf->data) {
+        ASSERT(buf->size > 0);
+        buf->size -= 1;
     }
 }
 
-static void on_start(JsonTokenizer *tok, JsonToken *token) {
-    skip_whitespace(tok);
+static bool scan_escape_u(MemoryArena *arena, JsonInput *input,
+                          JsonToken *token, JsonError *error, Buf *buf,
+                          usize *buf_cursor, usize *start) {
+    for (int i = 0; i < 4; ++i) {
+        u8 ch;
+        if (!take_and_save_input(arena, input, token, error, &ch, buf,
+                                 buf_cursor, start)) {
+            if (!error->has_error) {
+                return set_error(arena, token, error, "Invalid escape unicode");
+            }
+            return false;
+        }
 
-    if (!has_input(tok)) {
-        set_eof(tok, token);
-        return;
+        switch (ch) {
+            case '0':
+            case '1':
+            case '2':
+            case '3':
+            case '4':
+            case '5':
+            case '6':
+            case '7':
+            case '8':
+            case '9':
+            case 'a':
+            case 'b':
+            case 'c':
+            case 'd':
+            case 'e':
+            case 'f':
+            case 'A':
+            case 'B':
+            case 'C':
+            case 'D':
+            case 'E':
+            case 'F': {
+            } break;
+
+            default: {
+                return set_error(arena, token, error,
+                                 "Expected hex digit but got '%c'", ch);
+            } break;
+        }
     }
 
-    char ch = take_input(tok);
+    return true;
+}
+
+static bool scan_escape(MemoryArena *arena, JsonInput *input, JsonToken *token,
+                        JsonError *error, Buf *buf, usize *buf_cursor,
+                        usize *start) {
+    u8 ch;
+    if (!take_and_save_input(arena, input, token, error, &ch, buf, buf_cursor,
+                             start)) {
+        if (!error->has_error) {
+            return set_error(arena, token, error,
+                             "Invalid escape character '\\'");
+        }
+        return false;
+    }
+
+    switch (ch) {
+        case '"':
+        case '\\':
+        case '/':
+        case 'b':
+        case 'f':
+        case 'n':
+        case 'r':
+        case 't': {
+            return true;
+        } break;
+
+        case 'u': {
+            return scan_escape_u(arena, input, token, error, buf, buf_cursor,
+                                 start);
+        } break;
+
+        default: {
+            return set_error(arena, token, error,
+                             "Invalid escape character '\\%c'", ch);
+        } break;
+    }
+}
+
+static bool scan_string(MemoryArena *arena, JsonInput *input, JsonToken *token,
+                        JsonError *error) {
+    usize start = input->cursor;
+    Buf buf = {};
+    usize buf_cursor = 0;
+
+    while (true) {
+        u8 ch;
+        if (!take_and_save_input(arena, input, token, error, &ch, &buf,
+                                 &buf_cursor, &start)) {
+            if (!error->has_error) {
+                return set_error(
+                    arena, token, error,
+                    "End of string '\"' expected but reached end of input");
+            }
+            return false;
+        }
+
+        switch (ch) {
+            case '"': {
+                if (buf.data) {
+                    save_buf(arena, &buf, &buf_cursor,
+                             buf_slice(input->buf, start, input->cursor - 1));
+                    *token = {
+                        .type = JsonToken_String,
+                        .value = buf_slice(buf, 0, buf_cursor),
+                    };
+                } else {
+                    *token = {
+                        .type = JsonToken_String,
+                        .value =
+                            buf_slice(input->buf, start, input->cursor - 1),
+                    };
+                }
+                return true;
+            } break;
+
+            case '\\': {
+                if (!scan_escape(arena, input, token, error, &buf, &buf_cursor,
+                                 &start)) {
+                    return false;
+                }
+            } break;
+
+            default: {
+            } break;
+        }
+    }
+}
+
+static Buf end_save_input(MemoryArena *arena, JsonInput *input, Buf *buf,
+                          usize *buf_cursor, usize start) {
+    if (buf->data) {
+        save_buf(arena, buf, buf_cursor,
+                 buf_slice(input->buf, start, input->cursor));
+        return buf_slice(*buf, 0, *buf_cursor);
+    } else {
+        return buf_slice(input->buf, start, input->cursor);
+    }
+}
+
+static bool set_number(MemoryArena *arena, JsonInput *input, JsonToken *token,
+                       Buf *buf, usize *buf_cursor, usize start) {
+    *token = {
+        .type = JsonToken_Number,
+        .value = end_save_input(arena, input, buf, buf_cursor, start),
+    };
+    return true;
+}
+
+static bool scan_exponent(MemoryArena *arena, JsonInput *input,
+                          JsonToken *token, JsonError *error, Buf *buf,
+                          usize *buf_cursor, usize *start, bool has_sign,
+                          bool has_digit) {
+    while (true) {
+        u8 ch;
+        if (!take_and_save_input(arena, input, token, error, &ch, buf,
+                                 buf_cursor, start)) {
+            return false;
+        }
+        switch (ch) {
+            case '-':
+            case '+': {
+                if (has_digit) {
+                    return_saved_input(input, buf);
+                    return set_number(arena, input, token, buf, buf_cursor,
+                                      *start);
+                }
+
+                if (has_sign) {
+                    return_saved_input(input, buf);
+                    Buf value =
+                        end_save_input(arena, input, buf, buf_cursor, *start);
+                    return set_error(arena, token, error,
+                                     "Invalid number '%.*s', expecting a "
+                                     "digit but got '%c'",
+                                     (int)value.size, value.data, ch);
+                }
+
+                return scan_exponent(arena, input, token, error, buf,
+                                     buf_cursor, start, true, false);
+            } break;
+
+            case '0':
+            case '1':
+            case '2':
+            case '3':
+            case '4':
+            case '5':
+            case '6':
+            case '7':
+            case '8':
+            case '9': {
+                if (!has_digit) {
+                    return scan_exponent(arena, input, token, error, buf,
+                                         buf_cursor, start, has_sign, true);
+                }
+            } break;
+
+            default: {
+                return_saved_input(input, buf);
+
+                if (!has_digit) {
+                    Buf value =
+                        end_save_input(arena, input, buf, buf_cursor, *start);
+                    return set_error(
+                        arena, token, error,
+                        "Invalid number '%.*s', expecting a digit but got '%c'",
+                        (int)value.size, value.data, ch);
+                }
+
+                return set_number(arena, input, token, buf, buf_cursor, *start);
+            } break;
+        }
+    }
+}
+
+static bool scan_fraction(MemoryArena *arena, JsonInput *input,
+                          JsonToken *token, JsonError *error, Buf *buf,
+                          usize *buf_cursor, usize *start, bool has_digit) {
+    while (true) {
+        u8 ch;
+        if (!take_and_save_input(arena, input, token, error, &ch, buf,
+                                 buf_cursor, start)) {
+            return false;
+        }
+
+        switch (ch) {
+            case '0':
+            case '1':
+            case '2':
+            case '3':
+            case '4':
+            case '5':
+            case '6':
+            case '7':
+            case '8':
+            case '9': {
+                if (!has_digit) {
+                    return scan_fraction(arena, input, token, error, buf,
+                                         buf_cursor, start, true);
+                }
+            } break;
+
+            case 'e':
+            case 'E': {
+                if (!has_digit) {
+                    return_saved_input(input, buf);
+                    Buf value =
+                        end_save_input(arena, input, buf, buf_cursor, *start);
+                    return set_error(
+                        arena, token, error,
+                        "Invalid number '%.*s', expecting a digit but got '%c'",
+                        (int)value.size, value.data, ch);
+                }
+
+                return scan_exponent(arena, input, token, error, buf,
+                                     buf_cursor, start, true, false);
+            } break;
+
+            default: {
+                return_saved_input(input, buf);
+
+                if (!has_digit) {
+                    Buf value =
+                        end_save_input(arena, input, buf, buf_cursor, *start);
+                    return set_error(
+                        arena, token, error,
+                        "Invalid number '%.*s', expecting a digit but got '%c'",
+                        (int)value.size, value.data, ch);
+                }
+
+                return set_number(arena, input, token, buf, buf_cursor, *start);
+            } break;
+        }
+    }
+}
+
+static bool scan_integer(MemoryArena *arena, JsonInput *input, JsonToken *token,
+                         JsonError *error, Buf *buf, usize *buf_cursor,
+                         usize *start) {
+    while (true) {
+        u8 ch;
+        if (!take_and_save_input(arena, input, token, error, &ch, buf,
+                                 buf_cursor, start)) {
+            return false;
+        }
+
+        switch (ch) {
+            case '0':
+            case '1':
+            case '2':
+            case '3':
+            case '4':
+            case '5':
+            case '6':
+            case '7':
+            case '8':
+            case '9': {
+            } break;
+
+            case '.': {
+                return scan_fraction(arena, input, token, error, buf,
+                                     buf_cursor, start, false);
+            } break;
+
+            case 'e':
+            case 'E': {
+                return scan_exponent(arena, input, token, error, buf,
+                                     buf_cursor, start, true, false);
+            } break;
+
+            default: {
+                return_saved_input(input, buf);
+                return set_number(arena, input, token, buf, buf_cursor, *start);
+            } break;
+        }
+    }
+}
+
+static bool scan_number(MemoryArena *arena, JsonInput *input, JsonToken *token,
+                        JsonError *error, Buf *buf, usize *buf_cursor,
+                        usize *start, bool has_minus) {
+    u8 ch;
+    if (!take_and_save_input(arena, input, token, error, &ch, buf, buf_cursor,
+                             start)) {
+        return false;
+    }
+
+    switch (ch) {
+        case '0': {
+            if (!take_and_save_input(arena, input, token, error, &ch, buf,
+                                     buf_cursor, start)) {
+                return false;
+            }
+            switch (ch) {
+                case '.': {
+                    return scan_fraction(arena, input, token, error, buf,
+                                         buf_cursor, start, false);
+                } break;
+
+                case 'e':
+                case 'E': {
+                    return scan_exponent(arena, input, token, error, buf,
+                                         buf_cursor, start, false, false);
+                }
+                default: {
+                    return_saved_input(input, buf);
+                    return set_number(arena, input, token, buf, buf_cursor,
+                                      *start);
+                } break;
+            }
+        } break;
+
+        case '-': {
+            if (has_minus) {
+                return_saved_input(input, buf);
+                return set_error(
+                    arena, token, error,
+                    "Invalid number '-', expecting a digit but got '-'");
+            }
+
+            return scan_number(arena, input, token, error, buf, buf_cursor,
+                               start, true);
+        } break;
+
+        case '1':
+        case '2':
+        case '3':
+        case '4':
+        case '5':
+        case '6':
+        case '7':
+        case '8':
+        case '9': {
+            return scan_integer(arena, input, token, error, buf, buf_cursor,
+                                start);
+        } break;
+
+        default: {
+            UNREACHABLE;
+        } break;
+    }
+}
+
+bool json_scan(MemoryArena *arena, JsonInput *input, JsonToken *token,
+               JsonError *error) {
+    if (!skip_whitespace(arena, input, token, error)) {
+        return false;
+    }
+
+    u8 ch;
+    if (!take_input(arena, input, token, error, &ch)) {
+        return false;
+    }
+
     switch (ch) {
         case '"': {
-            ASSERT(tok->buf_cursor == 0);
-            tok->state = State_String;
+            return scan_string(arena, input, token, error);
         } break;
 
         case '-':
@@ -151,495 +562,70 @@ static void on_start(JsonTokenizer *tok, JsonToken *token) {
         case '7':
         case '8':
         case '9': {
-            ASSERT(tok->buf_cursor == 0);
-            tok->state = State_Integer;
-            save_char(tok, ch);
+            return_input(input);
+
+            usize start = input->cursor;
+            Buf buf = {};
+            usize buf_cursor = 0;
+            return scan_number(arena, input, token, error, &buf, &buf_cursor,
+                               &start, false);
         } break;
 
         case '[': {
             *token = {.type = JsonToken_ArrayStart};
+            return true;
         } break;
 
         case ']': {
             *token = {.type = JsonToken_ArrayEnd};
+            return true;
         } break;
 
         case '{': {
             *token = {.type = JsonToken_ObjectStart};
+            return true;
         } break;
 
         case '}': {
             *token = {.type = JsonToken_ObjectEnd};
+            return true;
         } break;
 
         case ':': {
             *token = {.type = JsonToken_Colon};
+            return true;
         } break;
 
         case ',': {
             *token = {.type = JsonToken_Comma};
+            return true;
         } break;
 
         case 't': {
-            tok->state = State_T;
+            if (expect(arena, input, token, error, STR_LITERAL("rue"))) {
+                *token = {.type = JsonToken_True};
+                return true;
+            }
         } break;
 
         case 'f': {
-            tok->state = State_F;
+            if (expect(arena, input, token, error, STR_LITERAL("alse"))) {
+                *token = {.type = JsonToken_False};
+                return true;
+            }
         } break;
 
         case 'n': {
-            tok->state = State_N;
+            if (expect(arena, input, token, error, STR_LITERAL("ull"))) {
+                *token = {.type = JsonToken_Null};
+                return true;
+            }
         } break;
 
         default: {
-            tok->state = State_Error;
-            set_error(tok, token, "JSON value expected but got '%c'", ch);
         } break;
     }
-}
 
-static void set_string_error_or_eof(JsonTokenizer *tok, JsonToken *token) {
-    if (tok->last_input) {
-        set_error(tok, token,
-                  "End of string '\"' expected but reached end of input");
-    } else {
-        set_eof(tok, token);
-    }
-}
-
-static void on_string(JsonTokenizer *tok, JsonToken *token) {
-    while (token->type == JsonToken_Unknown) {
-        if (!has_input(tok)) {
-            set_string_error_or_eof(tok, token);
-            return;
-        }
-
-        u8 ch = take_input(tok);
-        switch (ch) {
-            case '"': {
-                tok->state = State_StringEnd;
-                *token = {
-                    .type = JsonToken_String,
-                    .value = buf_slice(tok->buf, 0, tok->buf_cursor),
-                };
-            } break;
-
-            case '\\': {
-                save_char(tok, ch);
-                tok->state = State_Escape;
-                return;
-            } break;
-
-            default: {
-                save_char(tok, ch);
-            } break;
-        }
-    }
-}
-
-static void on_string_escape(JsonTokenizer *tok, JsonToken *token) {
-    if (!has_input(tok)) {
-        set_string_error_or_eof(tok, token);
-        return;
-    }
-
-    u8 ch = take_input(tok);
-    switch (ch) {
-        case '"':
-        case '\\':
-        case '/':
-        case 'b':
-        case 'f':
-        case 'n':
-        case 'r':
-        case 't': {
-            save_char(tok, ch);
-            tok->state = State_String;
-        } break;
-
-        case 'u': {
-            save_char(tok, ch);
-            tok->state = State_EscapeU0;
-        } break;
-
-        default: {
-            tok->state = State_Error;
-            set_error(tok, token, "Invalid escape character '\\%c'", ch);
-        } break;
-    }
-}
-
-static void on_string_escape_u(JsonTokenizer *tok, JsonToken *token,
-                               u8 next_state) {
-    if (!has_input(tok)) {
-        set_eof(tok, token);
-        return;
-    }
-
-    u8 ch = take_input(tok);
-    switch (ch) {
-        case '0':
-        case '1':
-        case '2':
-        case '3':
-        case '4':
-        case '5':
-        case '6':
-        case '7':
-        case '8':
-        case '9':
-        case 'a':
-        case 'b':
-        case 'c':
-        case 'd':
-        case 'e':
-        case 'f':
-        case 'A':
-        case 'B':
-        case 'C':
-        case 'D':
-        case 'E':
-        case 'F': {
-            save_char(tok, ch);
-            tok->state = next_state;
-        } break;
-
-        default: {
-            tok->state = State_Error;
-            set_error(tok, token, "Expected hex digit but got '%c'", ch);
-        } break;
-    }
-}
-
-static void on_string_end(JsonTokenizer *tok, JsonToken *token) {
-    memory_arena_pop(&tok->arena, tok->buf.data);
-    tok->buf.data = 0;
-    tok->buf.size = 0;
-    tok->buf_cursor = 0;
-    tok->state = State_Start;
-}
-
-static void set_number_of_eof(JsonTokenizer *tok, JsonToken *token) {
-    if (tok->last_input) {
-        tok->state = State_NumberEnd;
-        *token = {
-            .type = JsonToken_Number,
-            .value = buf_slice(tok->buf, 0, tok->buf_cursor),
-        };
-    } else {
-        set_eof(tok, token);
-    }
-}
-
-static void on_integer(JsonTokenizer *tok, JsonToken *token) {
-    while (token->type == JsonToken_Unknown) {
-        if (!has_input(tok)) {
-            set_number_of_eof(tok, token);
-            return;
-        }
-
-        u8 ch = take_input(tok);
-        switch (ch) {
-            case '0':
-            case '1':
-            case '2':
-            case '3':
-            case '4':
-            case '5':
-            case '6':
-            case '7':
-            case '8':
-            case '9': {
-                if (((u8 *)tok->buf.data)[0] == '0' ||
-                    (((u8 *)tok->buf.data)[0] == '-' && tok->buf_cursor == 2 &&
-                     ((u8 *)tok->buf.data)[1] == '0')) {
-                    return_input(tok);
-                    *token = {
-                        .type = JsonToken_Number,
-                        .value = buf_slice(tok->buf, 0, tok->buf_cursor),
-                    };
-                    tok->state = State_Start;
-                } else {
-                    save_char(tok, ch);
-                }
-            } break;
-
-            case '.': {
-                save_char(tok, ch);
-                tok->state = State_Fraction;
-                return;
-            } break;
-
-            case 'e':
-            case 'E': {
-                save_char(tok, ch);
-                tok->state = State_Expoinent;
-                return;
-            } break;
-
-            default: {
-                return_input(tok);
-                tok->state = State_NumberEnd;
-                *token = {
-                    .type = JsonToken_Number,
-                    .value = buf_slice(tok->buf, 0, tok->buf_cursor),
-                };
-            } break;
-        }
-    }
-}
-
-static void on_fraction(JsonTokenizer *tok, JsonToken *token) {
-    while (token->type == JsonToken_Unknown) {
-        if (!has_input(tok)) {
-            set_number_of_eof(tok, token);
-            return;
-        }
-
-        u8 ch = take_input(tok);
-        switch (ch) {
-            case '0':
-            case '1':
-            case '2':
-            case '3':
-            case '4':
-            case '5':
-            case '6':
-            case '7':
-            case '8':
-            case '9': {
-                save_char(tok, ch);
-            } break;
-
-            case 'e':
-            case 'E': {
-                save_char(tok, ch);
-                tok->state = State_Expoinent;
-                return;
-            } break;
-
-            default: {
-                return_input(tok);
-                tok->state = State_NumberEnd;
-                *token = {
-                    .type = JsonToken_Number,
-                    .value = buf_slice(tok->buf, 0, tok->buf_cursor),
-                };
-            } break;
-        }
-    }
-}
-
-static void on_expoinent(JsonTokenizer *tok, JsonToken *token) {
-    while (token->type == JsonToken_Unknown) {
-        if (!has_input(tok)) {
-            set_number_of_eof(tok, token);
-            return;
-        }
-
-        u8 ch = take_input(tok);
-        switch (ch) {
-            case '0':
-            case '1':
-            case '2':
-            case '3':
-            case '4':
-            case '5':
-            case '6':
-            case '7':
-            case '8':
-            case '9': {
-                save_char(tok, ch);
-            } break;
-
-            case '+':
-            case '-': {
-                save_char(tok, ch);
-                tok->state = State_ExpoinentNoSign;
-                return;
-            } break;
-
-            default: {
-                return_input(tok);
-                tok->state = State_NumberEnd;
-                *token = {
-                    .type = JsonToken_Number,
-                    .value = buf_slice(tok->buf, 0, tok->buf_cursor),
-                };
-            } break;
-        }
-    }
-}
-
-static void on_expoinent_no_sign(JsonTokenizer *tok, JsonToken *token) {
-    while (token->type == JsonToken_Unknown) {
-        if (!has_input(tok)) {
-            set_number_of_eof(tok, token);
-            return;
-        }
-
-        u8 ch = take_input(tok);
-        switch (ch) {
-            case '0':
-            case '1':
-            case '2':
-            case '3':
-            case '4':
-            case '5':
-            case '6':
-            case '7':
-            case '8':
-            case '9': {
-                save_char(tok, ch);
-            } break;
-
-            default: {
-                return_input(tok);
-                tok->state = State_NumberEnd;
-                *token = {
-                    .type = JsonToken_Number,
-                    .value = buf_slice(tok->buf, 0, tok->buf_cursor),
-                };
-            } break;
-        }
-    }
-}
-
-static void on_number_end(JsonTokenizer *tok, JsonToken *token) {
-    memory_arena_pop(&tok->arena, tok->buf.data);
-    tok->buf.data = 0;
-    tok->buf.size = 0;
-    tok->buf_cursor = 0;
-    tok->state = State_Start;
-}
-
-static bool expect_char(JsonTokenizer *tok, JsonToken *token, char expected_ch,
-                        u8 next_state) {
-    if (!has_input(tok)) {
-        set_eof(tok, token);
-        return false;
-    }
-
-    u8 ch = take_input(tok);
-    if (ch == expected_ch) {
-        tok->state = next_state;
-        return true;
-    }
-
-    tok->state = State_Error;
-    set_error(tok, token, "Expected '%c' but got '%c'", expected_ch, ch);
-    return false;
-}
-
-JsonToken json_get_next_token(JsonTokenizer *tok) {
-    ASSERT(tok->cursor <= tok->input.size && "No more input to process");
-    ASSERT(json_is_scanning(tok));
-
-    JsonToken token = {.type = JsonToken_Unknown};
-    while (token.type == JsonToken_Unknown) {
-        switch (tok->state) {
-            case State_Start: {
-                on_start(tok, &token);
-            } break;
-
-            case State_String: {
-                on_string(tok, &token);
-            } break;
-
-            case State_Escape: {
-                on_string_escape(tok, &token);
-            } break;
-
-            case State_EscapeU0: {
-                on_string_escape_u(tok, &token, State_EscapeU1);
-            } break;
-
-            case State_EscapeU1: {
-                on_string_escape_u(tok, &token, State_EscapeU2);
-            } break;
-
-            case State_EscapeU2: {
-                on_string_escape_u(tok, &token, State_EscapeU3);
-            } break;
-
-            case State_EscapeU3: {
-                on_string_escape_u(tok, &token, State_String);
-            } break;
-
-            case State_StringEnd: {
-                on_string_end(tok, &token);
-            } break;
-
-            case State_Integer: {
-                on_integer(tok, &token);
-            } break;
-
-            case State_Fraction: {
-                on_fraction(tok, &token);
-            } break;
-
-            case State_Expoinent: {
-                on_expoinent(tok, &token);
-            } break;
-
-            case State_ExpoinentNoSign: {
-                on_expoinent_no_sign(tok, &token);
-            } break;
-
-            case State_NumberEnd: {
-                on_number_end(tok, &token);
-            } break;
-
-            case State_T: {
-                expect_char(tok, &token, 'r', State_Tr);
-            } break;
-
-            case State_Tr: {
-                expect_char(tok, &token, 'u', State_Tru);
-            } break;
-
-            case State_Tru: {
-                if (expect_char(tok, &token, 'e', State_Start)) {
-                    token.type = JsonToken_True;
-                }
-            } break;
-
-            case State_F: {
-                expect_char(tok, &token, 'a', State_Fa);
-            } break;
-
-            case State_Fa: {
-                expect_char(tok, &token, 'l', State_Fal);
-            } break;
-
-            case State_Fal: {
-                expect_char(tok, &token, 's', State_Fals);
-            } break;
-
-            case State_Fals: {
-                if (expect_char(tok, &token, 'e', State_Start)) {
-                    token.type = JsonToken_False;
-                }
-            } break;
-
-            case State_N: {
-                expect_char(tok, &token, 'u', State_Nu);
-            } break;
-
-            case State_Nu: {
-                expect_char(tok, &token, 'l', State_Nul);
-            } break;
-
-            case State_Nul: {
-                if (expect_char(tok, &token, 'l', State_Start)) {
-                    token.type = JsonToken_Null;
-                }
-            } break;
-
-            default:
-                UNREACHABLE;
-        }
-    }
-    return token;
+    return set_error(arena, token, error, "JSON value expected but got '%c'",
+                     ch);
 }

@@ -16,6 +16,7 @@ bool buf_equal(Buf lhs, Buf rhs) {
   return true;
 }
 
+// buf[start, end)
 Buf buf_slice(Buf buf, usize start, usize end) {
   ASSERT(start <= end);
   ASSERT(end <= buf.size);

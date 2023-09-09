@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <chrono>
@@ -56,99 +57,72 @@ static Args parse_args(int argc, char *argv[]) {
     return args;
 }
 
-struct File {
-    Buf path;
-    FILE *handle;
+static Buf read_all(FILE *file) {
+    ASSERT(file);
+
+    int r = fseek(file, 0, SEEK_END);
+    ASSERT(r == 0);
+    isize offset = ftell(file);
+    ASSERT(offset >= 0);
+    usize size = (usize)offset;
+
+    r = fseek(file, 0, SEEK_SET);
+    ASSERT(r == 0);
+
+    void *buf = malloc(size);
+    usize nread = fread(buf, 1, size, file);
+    ASSERT(nread == size);
+
+    return {.data = (u8 *)buf, .size = size};
+}
+
+struct JsonInputContext {
+    Buf content;
+    bool eof;
 };
 
-static File open_file(Buf path) {
-    File file = {};
-    file.path = path;
-    file.handle = fopen((char *)path.data, "rb");
-    if (!file.handle) {
-        fprintf(stderr, "Failed to open file %.*s: %s\n", (int)path.size,
-                (char *)path.data, strerror(errno));
+bool json_input_fetch(void *ctx_, MemoryArena *arena, Buf *buf,
+                      JsonError *error) {
+    JsonInputContext *ctx = (JsonInputContext *)ctx_;
+    if (ctx->eof) {
+        return false;
     }
-    return file;
-}
-
-static void close_file(File *file) {
-    if (file->handle) {
-        fclose(file->handle);
-        file->handle = 0;
-    }
-}
-
-static usize read_file(File *file, Buf buf) {
-    usize nread = fread(buf.data, 1, buf.size, file->handle);
-    if (nread < buf.size) {
-        int error = ferror(file->handle);
-        if (error != 0) {
-            nread = 0;
-            fprintf(stderr, "Failed to read file %.*s: %s\n",
-                    (int)file->path.size, (char *)file->path.data,
-                    strerror(error));
-        }
-    }
-    return nread;
+    *buf = ctx->content;
+    return true;
 }
 
 static int run(Args args) {
     ASSERT(args.file.data);
     int result = 0;
 
-    JsonTokenizer tok = json_init_tok();
+    FILE *file = fopen((const char *)args.file.data, "rb");
+    Buf content = read_all(file);
 
-    const usize kBufCap = 4096;
-    u8 buf_[kBufCap];
-    Buf buf = {.data = buf_, .size = kBufCap};
+    JsonInputContext ctx = {
+        .content = content,
+        .eof = false,
+    };
+    JsonInput input;
+    json_input_init(&input, &ctx, json_input_fetch);
 
-    File file = open_file(args.file);
-    if (file.handle) {
-        auto start = std::chrono::high_resolution_clock::now();
-        usize nparsed = 0;
+    MemoryArena arena;
+    memory_arena_init(&arena);
 
-        while (json_is_scanning(&tok)) {
-            usize nread = read_file(&file, buf);
-            nparsed += nread;
-            bool last_input = nread == 0;
-            json_set_input(&tok, buf_slice(buf, 0, nread), last_input);
+    auto start = std::chrono::high_resolution_clock::now();
+    usize nparsed = content.size;
 
-            bool eof = false;
-            while (!eof) {
-                JsonToken token = json_get_next_token(&tok);
-                switch (token.type) {
-                    case JsonToken_Error: {
-                        fprintf(stderr, "JSON error: %.*s\n",
-                                (int)token.value.size,
-                                (char *)token.value.data);
-                        eof = true;
-                    } break;
-
-                    case JsonToken_Eof: {
-                        eof = true;
-                    } break;
-
-                    default: {
-                    } break;
-                }
-            }
-        }
-
-        auto end = std::chrono::high_resolution_clock::now();
-        auto duration =
-            std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        duration.count();
-        f64 speed =
-            (f64)nparsed / (f64)duration.count() * 1024.0 * 1024.0 / 1'000'000;
-        fprintf(stdout, "Speed: %.2f MB/s\n", speed);
-
-        json_deinit_tok(&tok);
-
-        close_file(&file);
-    } else {
-        result = 1;
+    JsonToken token;
+    JsonError error;
+    while (json_scan(&arena, &input, &token, &error)) {
     }
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration =
+        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    duration.count();
+    f64 speed =
+        (f64)nparsed / (f64)duration.count() * 1024.0 * 1024.0 / 1'000'000;
+    fprintf(stdout, "Speed: %.2f MB/s\n", speed);
 
     return result;
 }

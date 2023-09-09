@@ -5,8 +5,6 @@
 #include "src/memory.h"
 
 enum JsonTokenType {
-    JsonToken_Unknown,
-    JsonToken_Error,
     JsonToken_Eof,
 
     JsonToken_String,
@@ -26,27 +24,29 @@ enum JsonTokenType {
     JsonToken_Null,
 };
 
+struct JsonError {
+    bool has_error;
+    Buf message;
+};
+
+// Returns false if there is no more input or an error occurred
+typedef bool(JsonInputFn_Fetch)(void *ctx, MemoryArena *arena, Buf *buf, JsonError *error);
+
+struct JsonInput {
+    void *ctx;
+    JsonInputFn_Fetch *fetch;
+
+    Buf buf;
+    usize cursor;
+};
+
+void json_input_init(JsonInput *input, void *ctx, JsonInputFn_Fetch *fetch);
+
 struct JsonToken {
     JsonTokenType type;
     Buf value;
 };
 
-struct JsonTokenizer {
-    MemoryArena arena;
-
-    Buf buf;
-    usize buf_cursor;
-    u8 state;
-
-    Buf input;
-    usize cursor;
-    bool last_input;
-};
-
-JsonTokenizer json_init_tok();
-void json_deinit_tok(JsonTokenizer *tok);
-
-bool json_is_scanning(JsonTokenizer *tok);
-void json_set_input(JsonTokenizer *tok, Buf input, bool last_input);
-
-JsonToken json_get_next_token(JsonTokenizer *tok);
+// Returns true if there are still tokens remaining
+bool json_scan(MemoryArena *arena, JsonInput *input, JsonToken *token,
+               JsonError *error);
