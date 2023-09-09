@@ -1,6 +1,13 @@
 #pragma once
 
+#include <stdlib.h>
+
 #include "src/defs.h"
+
+#define memory_alloc(size) malloc(size)
+#define memory_realloc(data, new_size) realloc(data, new_size)
+#define memory_calloc(count, size) calloc(count, size)
+#define memory_free(data) free(data)
 
 struct MemoryBlock {
     MemoryBlock *prev;

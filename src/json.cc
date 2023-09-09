@@ -43,9 +43,7 @@ static inline bool take_input(MemoryArena *arena, JsonInput *input,
 
     while (true) {
         input->cursor = 0;
-        *error = {};
         if (!(input->fetch(input->ctx, arena, &input->buf, error))) {
-            *token = {.type = JsonToken_Eof};
             *ch = 0;
             return false;
         }
@@ -56,7 +54,6 @@ static inline bool take_input(MemoryArena *arena, JsonInput *input,
 
     if (input->buf.size == 0) {
         *ch = 0;
-        *token = {.type = JsonToken_Eof};
         return false;
     }
 
@@ -103,16 +100,12 @@ static bool expect(MemoryArena *arena, JsonInput *input, JsonToken *token,
 
 static void save_buf(MemoryArena *arena, Buf *buf, usize *buf_cursor,
                      Buf data) {
-    if (!buf->data) {
-        ASSERT(*buf_cursor == 0);
-        ASSERT(is_power_of_two(BUF_SIZE));
-        buf->size = BUF_SIZE;
-        buf->data = (u8 *)memory_arena_alloc(arena, buf->size);
-        ASSERT(buf->data);
-    }
-
     while (*buf_cursor + data.size >= buf->size) {
-        buf->size <<= 1;
+        if (buf->size == 0) {
+            buf->size = BUF_SIZE;
+        } else {
+            buf->size <<= 1;
+        }
         buf->data = (u8 *)memory_arena_realloc(arena, buf->data, buf->size);
         ASSERT(buf->data);
     }
@@ -137,11 +130,10 @@ static bool take_and_save_input(MemoryArena *arena, JsonInput *input,
     return true;
 }
 
-static void return_saved_input(JsonInput *input, Buf *buf) {
+static void return_saved_input(JsonInput *input, usize *buf_cursor) {
     return_input(input);
-    if (buf->data) {
-        ASSERT(buf->size > 0);
-        buf->size -= 1;
+    if (*buf_cursor > 0) {
+        *buf_cursor -= 1;
     }
 }
 
@@ -233,13 +225,14 @@ static bool scan_escape(MemoryArena *arena, JsonInput *input, JsonToken *token,
 static bool scan_string(MemoryArena *arena, JsonInput *input, JsonToken *token,
                         JsonError *error) {
     usize start = input->cursor;
-    Buf buf = {};
-    usize buf_cursor = 0;
+    Buf *buf = &input->backing_buf;
+    usize *buf_cursor = &input->backing_buf_cursor;
+    *buf_cursor = 0;
 
     while (true) {
         u8 ch;
-        if (!take_and_save_input(arena, input, token, error, &ch, &buf,
-                                 &buf_cursor, &start)) {
+        if (!take_and_save_input(arena, input, token, error, &ch, buf,
+                                 buf_cursor, &start)) {
             if (!error->has_error) {
                 return set_error(
                     arena, token, error,
@@ -250,12 +243,12 @@ static bool scan_string(MemoryArena *arena, JsonInput *input, JsonToken *token,
 
         switch (ch) {
             case '"': {
-                if (buf.data) {
-                    save_buf(arena, &buf, &buf_cursor,
+                if (*buf_cursor > 0) {
+                    save_buf(arena, buf, buf_cursor,
                              buf_slice(input->buf, start, input->cursor - 1));
                     *token = {
                         .type = JsonToken_String,
-                        .value = buf_slice(buf, 0, buf_cursor),
+                        .value = buf_slice(*buf, 0, *buf_cursor),
                     };
                 } else {
                     *token = {
@@ -268,7 +261,7 @@ static bool scan_string(MemoryArena *arena, JsonInput *input, JsonToken *token,
             } break;
 
             case '\\': {
-                if (!scan_escape(arena, input, token, error, &buf, &buf_cursor,
+                if (!scan_escape(arena, input, token, error, buf, buf_cursor,
                                  &start)) {
                     return false;
                 }
@@ -282,7 +275,7 @@ static bool scan_string(MemoryArena *arena, JsonInput *input, JsonToken *token,
 
 static Buf end_save_input(MemoryArena *arena, JsonInput *input, Buf *buf,
                           usize *buf_cursor, usize start) {
-    if (buf->data) {
+    if (*buf_cursor > 0) {
         save_buf(arena, buf, buf_cursor,
                  buf_slice(input->buf, start, input->cursor));
         return buf_slice(*buf, 0, *buf_cursor);
@@ -314,13 +307,13 @@ static bool scan_exponent(MemoryArena *arena, JsonInput *input,
             case '-':
             case '+': {
                 if (has_digit) {
-                    return_saved_input(input, buf);
+                    return_saved_input(input, buf_cursor);
                     return set_number(arena, input, token, buf, buf_cursor,
                                       *start);
                 }
 
                 if (has_sign) {
-                    return_saved_input(input, buf);
+                    return_saved_input(input, buf_cursor);
                     Buf value =
                         end_save_input(arena, input, buf, buf_cursor, *start);
                     return set_error(arena, token, error,
@@ -350,7 +343,7 @@ static bool scan_exponent(MemoryArena *arena, JsonInput *input,
             } break;
 
             default: {
-                return_saved_input(input, buf);
+                return_saved_input(input, buf_cursor);
 
                 if (!has_digit) {
                     Buf value =
@@ -397,7 +390,7 @@ static bool scan_fraction(MemoryArena *arena, JsonInput *input,
             case 'e':
             case 'E': {
                 if (!has_digit) {
-                    return_saved_input(input, buf);
+                    return_saved_input(input, buf_cursor);
                     Buf value =
                         end_save_input(arena, input, buf, buf_cursor, *start);
                     return set_error(
@@ -411,7 +404,7 @@ static bool scan_fraction(MemoryArena *arena, JsonInput *input,
             } break;
 
             default: {
-                return_saved_input(input, buf);
+                return_saved_input(input, buf_cursor);
 
                 if (!has_digit) {
                     Buf value =
@@ -463,7 +456,7 @@ static bool scan_integer(MemoryArena *arena, JsonInput *input, JsonToken *token,
             } break;
 
             default: {
-                return_saved_input(input, buf);
+                return_saved_input(input, buf_cursor);
                 return set_number(arena, input, token, buf, buf_cursor, *start);
             } break;
         }
@@ -497,7 +490,7 @@ static bool scan_number(MemoryArena *arena, JsonInput *input, JsonToken *token,
                                          buf_cursor, start, false, false);
                 }
                 default: {
-                    return_saved_input(input, buf);
+                    return_saved_input(input, buf_cursor);
                     return set_number(arena, input, token, buf, buf_cursor,
                                       *start);
                 } break;
@@ -506,7 +499,7 @@ static bool scan_number(MemoryArena *arena, JsonInput *input, JsonToken *token,
 
         case '-': {
             if (has_minus) {
-                return_saved_input(input, buf);
+                return_saved_input(input, buf_cursor);
                 return set_error(
                     arena, token, error,
                     "Invalid number '-', expecting a digit but got '-'");
@@ -537,6 +530,9 @@ static bool scan_number(MemoryArena *arena, JsonInput *input, JsonToken *token,
 
 bool json_scan(MemoryArena *arena, JsonInput *input, JsonToken *token,
                JsonError *error) {
+    *token = {};
+    *error = {};
+
     if (!skip_whitespace(arena, input, token, error)) {
         return false;
     }
@@ -565,9 +561,10 @@ bool json_scan(MemoryArena *arena, JsonInput *input, JsonToken *token,
             return_input(input);
 
             usize start = input->cursor;
-            Buf buf = {};
-            usize buf_cursor = 0;
-            return scan_number(arena, input, token, error, &buf, &buf_cursor,
+            Buf *buf = &input->backing_buf;
+            usize *buf_cursor = &input->backing_buf_cursor;
+            *buf_cursor = 0;
+            return scan_number(arena, input, token, error, buf, buf_cursor,
                                &start, false);
         } break;
 

@@ -57,51 +57,40 @@ static Args parse_args(int argc, char *argv[]) {
     return args;
 }
 
-static Buf read_all(FILE *file) {
-    ASSERT(file);
-
-    int r = fseek(file, 0, SEEK_END);
-    ASSERT(r == 0);
-    isize offset = ftell(file);
-    ASSERT(offset >= 0);
-    usize size = (usize)offset;
-
-    r = fseek(file, 0, SEEK_SET);
-    ASSERT(r == 0);
-
-    void *buf = malloc(size);
-    usize nread = fread(buf, 1, size, file);
-    ASSERT(nread == size);
-
-    return {.data = (u8 *)buf, .size = size};
-}
-
 struct JsonInputContext {
-    Buf content;
-    bool eof;
+    FILE *file;
+    Buf buf;
+    usize nread;
 };
 
 bool json_input_fetch(void *ctx_, MemoryArena *arena, Buf *buf,
                       JsonError *error) {
     JsonInputContext *ctx = (JsonInputContext *)ctx_;
-    if (ctx->eof) {
+
+    usize nread = fread((void *)ctx->buf.data, 1, ctx->buf.size, ctx->file);
+    if (nread == 0) {
         return false;
     }
-    *buf = ctx->content;
-    ctx->eof = true;
+    *buf = buf_slice(ctx->buf, 0, nread);
+    ctx->nread += nread;
     return true;
 }
 
 static int run(Args args) {
     ASSERT(args.file.data);
-    int result = 0;
 
     FILE *file = fopen((const char *)args.file.data, "rb");
-    Buf content = read_all(file);
+    if (!file) {
+        fprintf(stderr, "Failed to open file %.*s: %s\n", (int)args.file.size,
+                args.file.data, strerror(errno));
+        return 1;
+    }
+
+    u8 buf[4096];
 
     JsonInputContext ctx = {
-        .content = content,
-        .eof = false,
+        .file = file,
+        .buf = {.data = buf, .size = sizeof(buf)},
     };
     JsonInput input;
     json_input_init(&input, &ctx, json_input_fetch);
@@ -110,12 +99,10 @@ static int run(Args args) {
     memory_arena_init(&arena);
 
     auto start = std::chrono::high_resolution_clock::now();
-    usize nparsed = content.size;
 
     JsonToken token;
     JsonError error;
     while (json_scan(&arena, &input, &token, &error)) {
-        memory_arena_clear(&arena);
     }
 
     if (error.has_error) {
@@ -127,10 +114,12 @@ static int run(Args args) {
         std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     duration.count();
     f64 speed =
-        (f64)nparsed / (f64)duration.count() * 1024.0 * 1024.0 / 1'000'000;
+        (f64)ctx.nread / (f64)duration.count() * 1024.0 * 1024.0 / 1'000'000;
     fprintf(stdout, "Speed: %.2f MB/s\n", speed);
 
-    return result;
+    memory_arena_deinit(&arena);
+
+    return 0;
 }
 
 int main(int argc, char *argv[]) {

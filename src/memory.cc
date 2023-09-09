@@ -15,7 +15,7 @@ static inline MemoryHeader *get_header(MemoryBlock *block, usize offset) {
 }
 
 static MemoryBlock *push_block(MemoryArena *arena, usize block_size) {
-    MemoryBlock *block = (MemoryBlock *)malloc(block_size);
+    MemoryBlock *block = (MemoryBlock *)memory_alloc(block_size);
     ASSERT(block);
     block->size = block_size;
     block->cursor = sizeof(MemoryBlock);
