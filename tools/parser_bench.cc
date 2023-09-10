@@ -86,17 +86,18 @@ static int run(Args args) {
         return 1;
     }
 
-    u8 buf[4096];
+    MemoryArena arena;
+    memory_arena_init(&arena);
+
+    usize buf_size = 1024 * 1024;
+    u8 *buf = (u8 *)memory_arena_alloc(&arena, buf_size);
 
     JsonInputContext ctx = {
         .file = file,
-        .buf = {.data = buf, .size = sizeof(buf)},
+        .buf = {.data = buf, .size = buf_size},
     };
     JsonInput input;
     json_input_init(&input, &ctx, json_input_fetch);
-
-    MemoryArena arena;
-    memory_arena_init(&arena);
 
     auto start = std::chrono::high_resolution_clock::now();
 

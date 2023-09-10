@@ -24,7 +24,7 @@ OPTIONS:
 
 const usize MAX_THREADS = 20;
 const usize MAX_STACK_DEPTH = 6;
-const usize MAX_FUNCTION_CALLS = 10;
+const usize MAX_FUNCTION_CALLS = 20;
 const usize MAX_DELAY = 1000000;
 
 static void print_usage() { fprintf(stderr, "%s", USAGE); }
@@ -102,7 +102,8 @@ static Args parse_args(int argc, char *argv[]) {
 
 static void generate_function(FILE *out, RandomSeries *series, usize thread_id,
                               u64 *current_time_us, usize current_depth,
-                              usize max_depth, usize func_index) {
+                              usize max_depth, usize func_index,
+                              bool *is_first) {
     if (current_depth > max_depth) {
         return;
     }
@@ -115,7 +116,7 @@ static void generate_function(FILE *out, RandomSeries *series, usize thread_id,
     u64 max_function_calls = random_between_u64(series, 1, MAX_FUNCTION_CALLS);
     for (usize func_index = 0; func_index < max_function_calls; ++func_index) {
         generate_function(out, series, thread_id, current_time_us,
-                          current_depth + 1, max_depth, func_index);
+                          current_depth + 1, max_depth, func_index, is_first);
         u64 call_delay = random_between_u64(series, 0, MAX_DELAY);
         *current_time_us += call_delay;
     }
@@ -129,20 +130,25 @@ static void generate_function(FILE *out, RandomSeries *series, usize thread_id,
         char buf[1024];
         snprintf(buf, sizeof(buf), "F(%zu, %zu, %zu)", thread_id, current_depth,
                  func_index);
+        if (!*is_first) {
+            fprintf(out, ",\n");
+        }
         fprintf(
             out,
             "{\"name\": \"%s\", \"cat\": \"Unknown\", \"ph\": \"X\", \"ts\": "
             "%" PRIu64 ", \"dur\": %" PRIu64 ", \"tid\": %zu, \"pid\": 1 }",
             buf, ts, dur, thread_id);
+        *is_first = false;
     }
 }
 
-static void generate_thread(FILE *out, RandomSeries *series, usize thread_id) {
+static void generate_thread(FILE *out, RandomSeries *series, usize thread_id,
+                            bool *is_first) {
     u64 current_time_us = random_between_u64(series, 0, MAX_DELAY);
     usize max_depth = random_between_u64(series, 1, MAX_STACK_DEPTH);
 
-    generate_function(out, series, thread_id, &current_time_us, 0, max_depth,
-                      0);
+    generate_function(out, series, thread_id, &current_time_us, 0, max_depth, 0,
+                      is_first);
 }
 
 static void generate(FILE *out, u64 seed) {
@@ -153,9 +159,14 @@ static void generate(FILE *out, u64 seed) {
 
     fprintf(out, "{\"traceEvents\":[\n");
 
+    bool is_first = true;
     for (usize thread_index = 0; thread_index < num_threads; ++thread_index) {
         usize thread_id = thread_index + 1;
-        generate_thread(out, series, thread_id);
+        generate_thread(out, series, thread_id, &is_first);
+    }
+
+    if (!is_first) {
+        fprintf(out, "\n");
     }
 
     fprintf(out, "]}\n");
