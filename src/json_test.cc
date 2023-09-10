@@ -130,6 +130,19 @@ TEST(JsonScanTest, Integer) {
                        {});
 }
 
+TEST(JsonScanTest, Integer2) {
+    const char *inputs[] = {
+        " 1",
+        "2",
+        "3",
+    };
+    JsonToken tokens[] = {
+        {.type = JsonToken_Number, .value = STR_LITERAL("123")},
+    };
+    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
+                       {});
+}
+
 TEST(JsonScanTest, Fraction) {
     const char *inputs[] = {
         " 1.",
@@ -143,10 +156,32 @@ TEST(JsonScanTest, Fraction) {
                        {});
 }
 
+TEST(JsonScanTest, Fraction2) {
+    const char *inputs[] = {
+        " 1.",
+        "2",
+        "3",
+    };
+    JsonToken tokens[] = {
+        {.type = JsonToken_Number, .value = STR_LITERAL("1.23")},
+    };
+    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
+                       {});
+}
+
 TEST(JsonScanTest, Exponent) {
     const char *inputs[] = {" 1e", "2", "3 "};
     JsonToken tokens[] = {
         {.type = JsonToken_Number, .value = STR_LITERAL("1e23")},
+    };
+    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
+                       {});
+}
+
+TEST(JsonScanTest, Exponent2) {
+    const char *inputs[] = {" 1E", "2", "3"};
+    JsonToken tokens[] = {
+        {.type = JsonToken_Number, .value = STR_LITERAL("1E23")},
     };
     run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
                        {});
