@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-void json_input_init(JsonInput *input, void *ctx, JsonInputFn_Fetch *fetch) {
+void json_input_init(JsonInput *input, void *ctx, JsonInput_Fetch *fetch) {
     *input = {
         .ctx = ctx,
         .fetch = fetch,
@@ -524,6 +524,7 @@ static bool scan_number(MemoryArena *arena, JsonInput *input, JsonToken *token,
 
         default: {
             UNREACHABLE;
+            return false;
         } break;
     }
 }
