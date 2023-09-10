@@ -49,10 +49,23 @@ cc_binary(
         "//conditions:default": ["fast_tracing.cc"],
     }),
     deps = [
+        ":common",
+        ":json",
         "@imgui",
     ],
+    copts = select({
+        "@platforms//cpu:wasm32": ["-pthread"],
+        "//conditions:default": [],
+    }),
     linkopts = select({
-        "@platforms//cpu:wasm32": ["-sMODULARIZE -sEXPORT_ES6 -sEXPORTED_RUNTIME_METHODS=cwrap"],
+        "@platforms//cpu:wasm32": [
+            "-sMODULARIZE",
+            "-sEXPORT_ES6",
+            "-sEXPORTED_RUNTIME_METHODS=cwrap",
+            "-sASSERTIONS", 
+            "-sPTHREAD_POOL_SIZE=navigator.hardwareConcurrency",
+            "-pthread",
+        ],
         "//conditions:default": [],
     }),
 )
@@ -60,5 +73,9 @@ cc_binary(
 wasm_cc_binary(
     name = "fast_tracing_wasm",
     cc_target = ":fast_tracing",
-    outputs = ["fast_tracing.wasm", "fast_tracing.js"],
+    outputs = [
+        "fast_tracing.wasm",
+        "fast_tracing.js",
+        "fast_tracing.worker.js",
+    ],
 )

@@ -648,6 +648,11 @@ bool json_scan(MemoryArena *arena, JsonInput *input, JsonToken *token,
         } break;
     }
 
+    return_input(input);
+    Buf remaining = buf_slice(input->buf, input->cursor, input->buf.size);
+    printf("cursor: %d, input: %.*s\n", (int)input->cursor, (int)remaining.size,
+           remaining.data);
+
     return set_error(arena, token, error, "JSON value expected but got '%c'",
                      ch);
 }
