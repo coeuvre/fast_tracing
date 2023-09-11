@@ -89,20 +89,18 @@ static void app_start_loading(App *app) {
     ASSERT(ret == 0);
 }
 
-static void app_on_chunk(App *app, u8 *data, usize size) {
+static void *app_lock_input(App *app, usize size) {
     ASSERT(app_is_loading(app));
-
-    bool has_new_input = false;
 
     pthread_mutex_lock(&app->loading.mutex);
     if (app->loading.using_input) {
         pthread_cond_wait(&app->loading.cond_produce, &app->loading.mutex);
     }
-    
+
     ASSERT(!app->loading.using_input);
     app->loading.using_input = true;
 
-    if (app->loading.loading && data && size > 0) {
+    if (app->loading.loading && size > 0) {
         if (app->loading.input.size < size) {
             app->loading.input.data =
                 (u8 *)memory_realloc(app->loading.input.data, size);
@@ -110,27 +108,37 @@ static void app_on_chunk(App *app, u8 *data, usize size) {
         }
 
         ASSERT(app->loading.input.data && app->loading.input.size >= size);
-        memcpy(app->loading.input.data, data, size);
         app->loading.input_size = size;
-        has_new_input = true;
     } else {
         app->loading.input_size = 0;
     }
 
+    void *ptr;
+    if (app->loading.input_size > 0) {
+        ptr = app->loading.input.data;
+    } else {
+        ptr = 0;
+    }
+    return ptr;
+}
+
+static void app_unlock_input(App *app) {
     pthread_mutex_unlock(&app->loading.mutex);
 
     pthread_cond_signal(&app->loading.cond_consume);
 
-    if (!has_new_input) {
-        // pthread_join(app->loading.thread, 0);
+    if (app->loading.input_size == 0) {
+        pthread_join(app->loading.thread, 0);
         app->loading.thread = 0;
     }
 }
 
-static void app_on_chunk_done(App *app) { app_on_chunk(app, 0, 0); }
+static void app_on_chunk_done(App *app) {
+    app_lock_input(app, 0);
+    app_unlock_input(app);
+}
 
 extern "C" {
-
 EMSCRIPTEN_KEEPALIVE
 void *app_new() {
     App *app = (App *)memory_alloc(sizeof(App));
@@ -151,9 +159,15 @@ void app_start_loading(void *app_) {
 }
 
 EMSCRIPTEN_KEEPALIVE
-void app_on_chunk(void *app_, u8 *data, usize size) {
+void *app_lock_input(void *app_, usize size) {
     App *app = (App *)app_;
-    app_on_chunk(app, data, size);
+    return app_lock_input(app, size);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void app_unlock_input(void *app_) {
+    App *app = (App *)app_;
+    app_unlock_input(app);
 }
 
 EMSCRIPTEN_KEEPALIVE

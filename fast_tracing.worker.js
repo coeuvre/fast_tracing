@@ -1,0 +1,1 @@
+bazel-bin/src/fast_tracing.worker.js

@@ -54,7 +54,10 @@ cc_binary(
         "@imgui",
     ],
     copts = select({
-        "@platforms//cpu:wasm32": ["-pthread"],
+        "@platforms//cpu:wasm32": [
+            "-pthread",
+            "-sWASM_WORKERS",
+        ],
         "//conditions:default": [],
     }),
     linkopts = select({
@@ -64,6 +67,7 @@ cc_binary(
             "-sEXPORTED_RUNTIME_METHODS=cwrap",
             "-sASSERTIONS", 
             "-sPTHREAD_POOL_SIZE=navigator.hardwareConcurrency",
+            "-sWASM_WORKERS",
             "-pthread",
         ],
         "//conditions:default": [],
