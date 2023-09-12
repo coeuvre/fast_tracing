@@ -5,7 +5,8 @@
 
 #include <chrono>
 
-#include "src/json.h"
+#include "src/json_trace.h"
+#include "src/trace.h"
 #include "tools/common.h"
 
 const char *USAGE = R"(parser_bench
@@ -57,24 +58,24 @@ static Args parse_args(int argc, char *argv[]) {
     return args;
 }
 
-struct JsonInputContext {
-    FILE *file;
-    Buf buf;
-    usize nread;
-};
+// struct JsonInputContext {
+//     FILE *file;
+//     Buf buf;
+//     usize nread;
+// };
 
-bool json_input_fetch(void *ctx_, MemoryArena *arena, Buf *buf,
-                      JsonError *error) {
-    JsonInputContext *ctx = (JsonInputContext *)ctx_;
+// bool json_input_fetch(void *ctx_, MemoryArena *arena, Buf *buf,
+//                       JsonError *error) {
+//     JsonInputContext *ctx = (JsonInputContext *)ctx_;
 
-    usize nread = fread((void *)ctx->buf.data, 1, ctx->buf.size, ctx->file);
-    if (nread == 0) {
-        return false;
-    }
-    *buf = buf_slice(ctx->buf, 0, nread);
-    ctx->nread += nread;
-    return true;
-}
+//     usize nread = fread((void *)ctx->buf.data, 1, ctx->buf.size, ctx->file);
+//     if (nread == 0) {
+//         return false;
+//     }
+//     *buf = buf_slice(ctx->buf, 0, nread);
+//     ctx->nread += nread;
+//     return true;
+// }
 
 static int run(Args args) {
     ASSERT(args.file.data);
@@ -86,28 +87,44 @@ static int run(Args args) {
         return 1;
     }
 
+    u8 buf[4096];
+
     MemoryArena arena;
     memory_arena_init(&arena);
 
-    usize buf_size = 1024 * 1024;
-    u8 *buf = (u8 *)memory_arena_alloc(&arena, buf_size);
+    JsonTraceParser parser;
+    json_trace_parser_init(&parser, &arena);
 
-    JsonInputContext ctx = {
-        .file = file,
-        .buf = {.data = buf, .size = buf_size},
-    };
-    JsonInput input;
-    json_input_init(&input, &ctx, json_input_fetch);
+    Trace trace;
+    // TODO: init trace
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    JsonToken token;
-    JsonError error;
-    while (json_scan(&arena, &input, &token, &error)) {
-    }
+    usize total = 0;
+    bool done = false;
+    while (!done) {
+        usize nread = fread(buf, 1, sizeof(buf), file);
+        if (nread == 0) {
+            break;
+        }
 
-    if (error.has_error) {
-        printf("Error: %.*s\n", (int)error.message.size, error.message.data);
+        total += nread;
+
+        JsonTraceResult result = json_trace_parser_parse(
+            &parser, &trace, {.data = buf, .size = nread});
+        switch (result) {
+            case JsonTraceResult_Error: {
+                fprintf(stderr, "Error: %s\n",
+                        json_trace_parser_get_error(&parser));
+                return 1;
+            }
+            case JsonTraceResult_Done: {
+                done = true;
+            } break;
+            case JsonTraceResult_NeedMoreInput: {
+                break;
+            }
+        }
     }
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -115,7 +132,7 @@ static int run(Args args) {
         std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     duration.count();
     f64 speed =
-        (f64)ctx.nread / (f64)duration.count() * 1024.0 * 1024.0 / 1'000'000;
+        (f64)total / (f64)duration.count() * 1024.0 * 1024.0 / 1'000'000;
     fprintf(stdout, "Speed: %.2f MB/s\n", speed);
 
     memory_arena_deinit(&arena);

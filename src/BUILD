@@ -23,8 +23,8 @@ cc_test(
 
 cc_library(
     name = "json",
-    hdrs = ["json.h"],
-    srcs = ["json.cc"],
+    hdrs = ["json.h", "trace.h", "json_trace.h"],
+    srcs = ["json.cc", "json_trace.cc"],
     deps = [
         ":common",
     ],
