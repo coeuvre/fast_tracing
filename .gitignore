@@ -2,3 +2,4 @@
 bazel-*
 node_modules/
 dist/
+compile_commands.json
