@@ -5,8 +5,8 @@
 #include "src/memory.h"
 #include "src/trace.h"
 
-struct JsonTraceParserState_ObjectFormat {
-    usize buf_cursor;
+struct JsonTraceParserState_ArrayFormat {
+    u8 last_char;
 };
 
 struct JsonTraceParserState_SkipChar {
@@ -15,16 +15,20 @@ struct JsonTraceParserState_SkipChar {
 };
 
 struct JsonTraceParserState_UnknownKey {
-    usize stack_cursor;
+    bool init;
     u8 last_char;
 };
 
 struct JsonTraceParser {
     MemoryArena *arena;
     Buf buf;
+    usize buf_cursor;
+    Buf stack;
+    usize stack_cursor;
+    bool has_object_format;
     u8 state;
     union {
-        JsonTraceParserState_ObjectFormat object_format;
+        JsonTraceParserState_ArrayFormat array_format;
         JsonTraceParserState_SkipChar skip_char;
         JsonTraceParserState_UnknownKey unknown_key;
     };
