@@ -54,21 +54,15 @@ cc_binary(
         "@imgui",
     ],
     copts = select({
-        "@platforms//cpu:wasm32": [
-            "-pthread",
-            "-sWASM_WORKERS",
-        ],
+        "@platforms//cpu:wasm32": [],
         "//conditions:default": [],
     }),
     linkopts = select({
         "@platforms//cpu:wasm32": [
             "-sMODULARIZE",
             "-sEXPORT_ES6",
-            "-sEXPORTED_RUNTIME_METHODS=cwrap",
+            "-sEXPORTED_RUNTIME_METHODS=cwrap,wasmMemory",
             "-sASSERTIONS", 
-            "-sPTHREAD_POOL_SIZE=navigator.hardwareConcurrency",
-            "-sWASM_WORKERS",
-            "-pthread",
         ],
         "//conditions:default": [],
     }),
@@ -80,6 +74,5 @@ wasm_cc_binary(
     outputs = [
         "fast_tracing.wasm",
         "fast_tracing.js",
-        "fast_tracing.worker.js",
     ],
 )

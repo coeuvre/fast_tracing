@@ -1,141 +1,78 @@
 #include <emscripten.h>
-#include <pthread.h>
 #include <stdio.h>
 
 #include "imgui.h"
+#include "json_trace.h"
 #include "src/json.h"
 #include "src/memory.h"
 
-struct LoadingState {
-    pthread_t thread;
-
-    pthread_mutex_t mutex;
-    // guarded by `mutex` {
-    pthread_cond_t cond_consume;
-    pthread_cond_t cond_produce;
+struct App {
+    MemoryArena arena;
+    JsonTraceParser parser;
+    Trace trace;
+    bool is_loading;
     Buf input;
     usize input_size;
-    bool using_input;
-    bool loading;
-    // }
 };
 
-struct App {
-    LoadingState loading;
-};
-
-static bool json_input_fetch(void *ctx_, MemoryArena *arena, Buf *buf,
-                             JsonError *error) {
-    App *app = (App *)ctx_;
-
-    pthread_mutex_lock(&app->loading.mutex);
-    if (app->loading.using_input) {
-        app->loading.using_input = false;
-        pthread_cond_signal(&app->loading.cond_produce);
-    }
-
-    pthread_cond_wait(&app->loading.cond_consume, &app->loading.mutex);
-    ASSERT(app->loading.using_input);
-    pthread_mutex_unlock(&app->loading.mutex);
-
-    *buf = {.data = app->loading.input.data, .size = app->loading.input_size};
-    return buf->size > 0;
-}
-
-static void *app_loading_thread_start(void *args) {
-    App *app = (App *)args;
-
-    pthread_mutex_lock(&app->loading.mutex);
-    app->loading.using_input = false;
-    app->loading.loading = true;
-    pthread_mutex_unlock(&app->loading.mutex);
-
-    JsonInput input;
-    json_input_init(&input, app, json_input_fetch);
-
-    MemoryArena arena;
-    memory_arena_init(&arena);
-    JsonToken token;
-    JsonError error;
-    while (json_scan(&arena, &input, &token, &error)) {
-    }
-
-    if (error.has_error) {
-        printf("Error: %.*s\n", (int)error.message.size, error.message.data);
-    }
-
-    pthread_mutex_lock(&app->loading.mutex);
-    app->loading.using_input = false;
-    app->loading.loading = false;
-    pthread_cond_signal(&app->loading.cond_produce);
-    pthread_mutex_unlock(&app->loading.mutex);
-
-    return 0;
-}
+static usize INIT_INPUT_SIZE = 4096;
 
 static void app_init(App *app) {
     *app = {};
-    pthread_mutex_init(&app->loading.mutex, 0);
-    pthread_cond_init(&app->loading.cond_consume, 0);
-    pthread_cond_init(&app->loading.cond_produce, 0);
+    memory_arena_init(&app->arena);
+    json_trace_parser_init(&app->parser, &app->arena);
+
+    app->input.size = INIT_INPUT_SIZE;
+    app->input.data = (u8 *)memory_alloc(INIT_INPUT_SIZE);
+    ASSERT(app->input.data);
 }
 
-static bool app_is_loading(App *app) { return app->loading.thread != 0; }
+static bool app_is_loading(App *app) { return app->is_loading; }
 
-static void app_start_loading(App *app) {
+static void app_begin_load(App *app) {
     ASSERT(!app_is_loading(app));
-    int ret =
-        pthread_create(&app->loading.thread, 0, app_loading_thread_start, app);
-    ASSERT(ret == 0);
+    app->is_loading = true;
 }
 
-static void *app_lock_input(App *app, usize size) {
+static void *app_get_input_buffer(App *app, usize size) {
     ASSERT(app_is_loading(app));
 
-    pthread_mutex_lock(&app->loading.mutex);
-    if (app->loading.using_input) {
-        pthread_cond_wait(&app->loading.cond_produce, &app->loading.mutex);
-    }
-
-    ASSERT(!app->loading.using_input);
-    app->loading.using_input = true;
-
-    if (app->loading.loading && size > 0) {
-        if (app->loading.input.size < size) {
-            app->loading.input.data =
-                (u8 *)memory_realloc(app->loading.input.data, size);
-            app->loading.input.size = size;
+    if (app->input.size < size) {
+        while (app->input.size < size) {
+            app->input.size <<= 1;
         }
-
-        ASSERT(app->loading.input.data && app->loading.input.size >= size);
-        app->loading.input_size = size;
-    } else {
-        app->loading.input_size = 0;
+        app->input.data =
+            (u8 *)memory_realloc(&app->input.data, app->input.size);
+        ASSERT(app->input.data);
     }
-
-    void *ptr;
-    if (app->loading.input_size > 0) {
-        ptr = app->loading.input.data;
-    } else {
-        ptr = 0;
-    }
-    return ptr;
+    app->input_size = size;
+    return app->input.data;
 }
 
-static void app_unlock_input(App *app) {
-    pthread_mutex_unlock(&app->loading.mutex);
+static void app_submit_input(App *app) {
+    ASSERT(app_is_loading(app));
 
-    pthread_cond_signal(&app->loading.cond_consume);
-
-    if (app->loading.input_size == 0) {
-        pthread_join(app->loading.thread, 0);
-        app->loading.thread = 0;
+    JsonTraceResult result = json_trace_parser_parse(
+        &app->parser, &app->trace, buf_slice(app->input, 0, app->input_size));
+    switch (result) {
+        case JsonTraceResult_Error: {
+            app->is_loading = false;
+            printf("Error: %s\n", json_trace_parser_get_error(&app->parser));
+        } break;
+        case JsonTraceResult_Done: {
+            app->is_loading = false;
+        } break;
+        case JsonTraceResult_NeedMoreInput: {
+        } break;
+        default:
+            UNREACHABLE;
     }
 }
 
-static void app_on_chunk_done(App *app) {
-    app_lock_input(app, 0);
-    app_unlock_input(app);
+static void app_end_load(App *app) {
+    if (app_is_loading(app)) {
+        app->is_loading = false;
+    }
 }
 
 extern "C" {
@@ -153,26 +90,26 @@ bool app_is_loading(void *app_) {
 }
 
 EMSCRIPTEN_KEEPALIVE
-void app_start_loading(void *app_) {
+void app_begin_load(void *app_) {
     App *app = (App *)app_;
-    app_start_loading(app);
+    app_begin_load(app);
 }
 
 EMSCRIPTEN_KEEPALIVE
-void *app_lock_input(void *app_, usize size) {
+void *app_get_input_buffer(void *app_, usize size) {
     App *app = (App *)app_;
-    return app_lock_input(app, size);
+    return app_get_input_buffer(app, size);
 }
 
 EMSCRIPTEN_KEEPALIVE
-void app_unlock_input(void *app_) {
+void app_submit_input(void *app_) {
     App *app = (App *)app_;
-    app_unlock_input(app);
+    app_submit_input(app);
 }
 
 EMSCRIPTEN_KEEPALIVE
-void app_on_chunk_done(void *app_) {
+void app_end_load(void *app_) {
     App *app = (App *)app_;
-    app_on_chunk_done(app);
+    app_end_load(app);
 }
 }

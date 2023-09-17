@@ -8,19 +8,18 @@ const app_new = FastTracingWasm.cwrap("app_new", "number", []);
 const app_is_loading = FastTracingWasm.cwrap("app_is_loading", "bool", [
   "number",
 ]);
-const app_start_loading = FastTracingWasm.cwrap("app_start_loading", null, [
+const app_begin_load = FastTracingWasm.cwrap("app_begin_load", null, [
   "number",
 ]);
-const app_lock_input = FastTracingWasm.cwrap("app_lock_input", "number", [
+const app_get_input_buffer = FastTracingWasm.cwrap(
+  "app_get_input_buffer",
   "number",
-  "number",
-]);
-const app_unlock_input = FastTracingWasm.cwrap("app_unlock_input", null, [
-  "number",
-]);
-const app_on_chunk_done = FastTracingWasm.cwrap("app_on_chunk_done", null, [
+  ["number", "number"],
+);
+const app_submit_input = FastTracingWasm.cwrap("app_submit_input", null, [
   "number",
 ]);
+const app_end_load = FastTracingWasm.cwrap("app_end_load", null, ["number"]);
 
 const app = app_new();
 
@@ -65,24 +64,18 @@ canvas.addEventListener("drop", async (event) => {
   // await decodeJson(file);
   const stream = file.stream();
   const reader = stream.getReader();
-  app_start_loading(app);
+  app_begin_load(app);
   while (app_is_loading(app)) {
     const { done, value } = await reader.read();
     if (done) {
       break;
     }
-    if (value.length > 0) {
-      const offset = app_lock_input(app, value.length);
-      if (offset > 0) {
-        const buffer = new Uint8Array(wasmMemory.buffer, offset, value.length);
-        buffer.set(value);
-      }
-      app_unlock_input(app);
-    }
+    const offset = app_get_input_buffer(app, value.length);
+    const buffer = new Uint8Array(wasmMemory.buffer, offset, value.length);
+    buffer.set(value);
+    app_submit_input(app);
   }
-  if (app_is_loading(app)) {
-    app_on_chunk_done(app);
-  }
+  app_end_load(app);
 
   const end = performance.now();
   const duration_s = (end - start) / 1000;
