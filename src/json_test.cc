@@ -2,37 +2,12 @@
 
 #include <gtest/gtest.h>
 
-struct TestJsonInputContext {
-    const char **inputs;
-    int input_count;
-    int input_index;
-};
+#include "src/buf.h"
 
-static bool test_json_input_fetch(void *ctx_, MemoryArena *arena, Buf *buf,
-                                  JsonError *error) {
-    TestJsonInputContext *ctx = (TestJsonInputContext *)ctx_;
-    if (ctx->input_index >= ctx->input_count) {
-        return false;
-    }
-
-    const char *input = ctx->inputs[ctx->input_index++];
-    *buf = {
-        .data = (u8 *)input,
-        .size = strlen(input),
-    };
-    return true;
-}
-
-static void run_json_scan_test(const char *inputs[], int input_count,
-                               JsonToken tokens[], int token_count,
+static void run_json_scan_test(Buf buf, JsonToken tokens[], int token_count,
                                JsonError expected_error) {
-    TestJsonInputContext ctx = {
-        .inputs = inputs,
-        .input_count = input_count,
-        .input_index = 0,
-    };
     JsonInput input;
-    json_input_init(&input, &ctx, test_json_input_fetch);
+    json_input_init(&input, buf);
 
     MemoryArena arena;
     memory_arena_init(&arena);
@@ -68,195 +43,141 @@ static void run_json_scan_test(const char *inputs[], int input_count,
 }
 
 TEST(JsonScanTest, String) {
-    const char *inputs[] = {
-        " \"a",
-        "b",
-        "\" ",
-    };
+    Buf input = STR_LITERAL(" \"ab\"");
     JsonToken tokens[] = {
         {.type = JsonToken_String, .value = STR_LITERAL("ab")},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, StringEscape) {
-    const char *inputs[] = {
-        " \"a",
-        "b\\",
-        "\\\" ",
-    };
+    Buf input = STR_LITERAL(" \"ab\\\\\" ");
     JsonToken tokens[] = {
         {.type = JsonToken_String, .value = STR_LITERAL("ab\\\\")},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, StringEscapeU) {
-    const char *inputs[] = {
-        "\"\\uabcd\"",
-    };
+    Buf input = STR_LITERAL(" \"\\uabcd\"");
     JsonToken tokens[] = {
         {.type = JsonToken_String, .value = STR_LITERAL("\\uabcd")},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, StringEof) {
-    const char *inputs[] = {
-        " \"a",
-        " ",
-    };
+    Buf input = STR_LITERAL(" \"ab");
     JsonToken tokens[] = {};
     run_json_scan_test(
-        inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
+        input, tokens, ARRAY_SIZE(tokens),
         {.has_error = true,
          .message = STR_LITERAL(
              "End of string '\"' expected but reached end of input")});
 }
 
 TEST(JsonScanTest, Integer) {
-    const char *inputs[] = {
-        " 1",
-        "2",
-        "3 ",
-    };
+    Buf input = STR_LITERAL(" 123 ");
     JsonToken tokens[] = {
         {.type = JsonToken_Number, .value = STR_LITERAL("123")},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, Integer2) {
-    const char *inputs[] = {
-        " 1",
-        "2",
-        "3",
-    };
+    Buf input = STR_LITERAL(" 123");
     JsonToken tokens[] = {
         {.type = JsonToken_Number, .value = STR_LITERAL("123")},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, Fraction) {
-    const char *inputs[] = {
-        " 1.",
-        "2",
-        "3 ",
-    };
+    Buf input = STR_LITERAL(" 1.23 ");
     JsonToken tokens[] = {
         {.type = JsonToken_Number, .value = STR_LITERAL("1.23")},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, Fraction2) {
-    const char *inputs[] = {
-        " 1.",
-        "2",
-        "3",
-    };
+    Buf input = STR_LITERAL(" 1.23");
     JsonToken tokens[] = {
         {.type = JsonToken_Number, .value = STR_LITERAL("1.23")},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, Exponent) {
-    const char *inputs[] = {" 1e", "2", "3 "};
+    Buf input = STR_LITERAL(" 1e23 ");
     JsonToken tokens[] = {
         {.type = JsonToken_Number, .value = STR_LITERAL("1e23")},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, Exponent2) {
-    const char *inputs[] = {" 1E", "2", "3"};
+    Buf input = STR_LITERAL(" 1E23");
     JsonToken tokens[] = {
         {.type = JsonToken_Number, .value = STR_LITERAL("1E23")},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, ObjectBeginEnd) {
-    const char *inputs[] = {
-        "{",
-        "}",
-    };
+    Buf input = STR_LITERAL("{}");
     JsonToken tokens[] = {
         {.type = JsonToken_ObjectStart},
         {.type = JsonToken_ObjectEnd},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, ArrayBeginEnd) {
-    const char *inputs[] = {
-        " [",
-        "] ",
-    };
+    Buf input = STR_LITERAL(" [] ");
     JsonToken tokens[] = {
         {.type = JsonToken_ArrayStart},
         {.type = JsonToken_ArrayEnd},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, Colon) {
-    const char *inputs[] = {
-        " ",
-        ": ",
-    };
+    Buf input = STR_LITERAL(" : ");
     JsonToken tokens[] = {
         {.type = JsonToken_Colon},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, Comma) {
-    const char *inputs[] = {" ", ", "};
+    Buf input = STR_LITERAL(" , ");
     JsonToken tokens[] = {
         {.type = JsonToken_Comma},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, True) {
-    const char *inputs[] = {"  t", "ru", "e "};
+    Buf input = STR_LITERAL(" true ");
     JsonToken tokens[] = {
         {.type = JsonToken_True},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, False) {
-    const char *inputs[] = {"  f", "al", "s", "e "};
+    Buf input = STR_LITERAL(" false ");
     JsonToken tokens[] = {
         {.type = JsonToken_False},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }
 
 TEST(JsonScanTest, Null) {
-    const char *inputs[] = {"  n", "ul", "l "};
+    Buf input = STR_LITERAL(" null ");
     JsonToken tokens[] = {
         {.type = JsonToken_Null},
     };
-    run_json_scan_test(inputs, ARRAY_SIZE(inputs), tokens, ARRAY_SIZE(tokens),
-                       {});
+    run_json_scan_test(input, tokens, ARRAY_SIZE(tokens), {});
 }

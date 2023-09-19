@@ -29,22 +29,12 @@ struct JsonError {
     Buf message;
 };
 
-// Returns false if there is no more input or an error occurred
-typedef bool(JsonInput_Fetch)(void *ctx, MemoryArena *arena, Buf *buf,
-                              JsonError *error);
-
 struct JsonInput {
-    void *ctx;
-    JsonInput_Fetch *fetch;
-
     Buf buf;
     usize cursor;
-
-    Buf backing_buf;
-    usize backing_buf_cursor;
 };
 
-void json_input_init(JsonInput *input, void *ctx, JsonInput_Fetch *fetch);
+void json_input_init(JsonInput *input, Buf buf);
 
 struct JsonToken {
     JsonTokenType type;
