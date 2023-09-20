@@ -12,7 +12,7 @@ void json_input_init(JsonInput *input, Buf buf) {
     input->cursor = 0;
 }
 
-static const usize ERROR_MESSAGE_SIZE = 1024;
+static const usize ERROR_MESSAGE_SIZE = 128;
 
 static bool set_error(MemoryArena *arena, JsonToken *token, JsonError *error,
                       const char *fmt, ...) {
@@ -32,8 +32,7 @@ static bool set_error(MemoryArena *arena, JsonToken *token, JsonError *error,
 }
 
 // Returns false if there is no more input
-static inline bool take_input(MemoryArena *arena, JsonInput *input,
-                              JsonToken *token, u8 *ch) {
+static bool take_input(JsonInput *input, JsonToken *token, u8 *ch) {
     ASSERT(input->cursor <= input->buf.size);
     if (input->cursor == input->buf.size) {
         *ch = 0;
@@ -44,16 +43,15 @@ static inline bool take_input(MemoryArena *arena, JsonInput *input,
     return true;
 }
 
-static inline void return_input(JsonInput *input) {
+static void return_input(JsonInput *input) {
     ASSERT(input->cursor > 0);
     input->cursor--;
 }
 
-static bool skip_whitespace(MemoryArena *arena, JsonInput *input,
-                            JsonToken *token) {
+static bool skip_whitespace(JsonInput *input, JsonToken *token) {
     while (true) {
         u8 c;
-        if (!take_input(arena, input, token, &c)) {
+        if (!take_input(input, token, &c)) {
             return false;
         }
 
@@ -70,7 +68,7 @@ static bool expect(MemoryArena *arena, JsonInput *input, JsonToken *token,
     for (usize i = 0; i < expected.size; ++i) {
         u8 expected_ch = expected.data[i];
         u8 actual_ch;
-        if (!take_input(arena, input, token, &actual_ch)) {
+        if (!take_input(input, token, &actual_ch)) {
             set_error(arena, token, error,
                       "Expected '%.*s' but reached end "
                       "of input",
@@ -91,7 +89,7 @@ static bool scan_escape_u(MemoryArena *arena, JsonInput *input,
                           JsonToken *token, JsonError *error) {
     for (int i = 0; i < 4; ++i) {
         u8 ch;
-        if (!take_input(arena, input, token, &ch)) {
+        if (!take_input(input, token, &ch)) {
             return set_error(arena, token, error, "Invalid escape unicode");
         }
 
@@ -133,7 +131,7 @@ static bool scan_escape_u(MemoryArena *arena, JsonInput *input,
 static bool scan_escape(MemoryArena *arena, JsonInput *input, JsonToken *token,
                         JsonError *error) {
     u8 ch;
-    if (!take_input(arena, input, token, &ch)) {
+    if (!take_input(input, token, &ch)) {
         return set_error(arena, token, error, "Invalid escape character '\\'");
     }
 
@@ -165,7 +163,7 @@ static bool scan_string(MemoryArena *arena, JsonInput *input, JsonToken *token,
     usize start = input->cursor;
     while (true) {
         u8 ch;
-        if (!take_input(arena, input, token, &ch)) {
+        if (!take_input(input, token, &ch)) {
             return set_error(
                 arena, token, error,
                 "End of string '\"' expected but reached end of input");
@@ -206,7 +204,7 @@ static bool scan_exponent(MemoryArena *arena, JsonInput *input,
                           bool has_sign, bool has_digit) {
     while (true) {
         u8 ch;
-        if (!take_input(arena, input, token, &ch)) {
+        if (!take_input(input, token, &ch)) {
             if (!has_digit) {
                 Buf value = buf_slice(input->buf, start, input->cursor);
                 return set_error(arena, token, error,
@@ -277,7 +275,7 @@ static bool scan_fraction(MemoryArena *arena, JsonInput *input,
                           bool has_digit) {
     while (true) {
         u8 ch;
-        if (!take_input(arena, input, token, &ch)) {
+        if (!take_input(input, token, &ch)) {
             if (!has_digit) {
                 Buf value = buf_slice(input->buf, start, input->cursor);
                 return set_error(arena, token, error,
@@ -342,7 +340,7 @@ static bool scan_integer(MemoryArena *arena, JsonInput *input, JsonToken *token,
                          JsonError *error, usize start) {
     while (true) {
         u8 ch;
-        if (!take_input(arena, input, token, &ch)) {
+        if (!take_input(input, token, &ch)) {
             return set_number(arena, input, token, start);
         }
 
@@ -380,13 +378,13 @@ static bool scan_integer(MemoryArena *arena, JsonInput *input, JsonToken *token,
 static bool scan_number(MemoryArena *arena, JsonInput *input, JsonToken *token,
                         JsonError *error, usize start, bool has_minus) {
     u8 ch;
-    if (!take_input(arena, input, token, &ch)) {
+    if (!take_input(input, token, &ch)) {
         return false;
     }
 
     switch (ch) {
         case '0': {
-            if (!take_input(arena, input, token, &ch)) {
+            if (!take_input(input, token, &ch)) {
                 return false;
             }
             switch (ch) {
@@ -442,12 +440,12 @@ bool json_scan(MemoryArena *arena, JsonInput *input, JsonToken *token,
     *token = {};
     *error = {};
 
-    if (!skip_whitespace(arena, input, token)) {
+    if (!skip_whitespace(input, token)) {
         return false;
     }
 
     u8 ch;
-    if (!take_input(arena, input, token, &ch)) {
+    if (!take_input(input, token, &ch)) {
         return false;
     }
 

@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "src/buf.h"
+#include "src/json.h"
 
 enum {
     // Initial state. we need to skip whitespace and find a '{' or '[',
@@ -154,8 +155,255 @@ static bool is_stack_empty(JsonTraceParser *parser) {
     return parser->stack_cursor == 0;
 }
 
-static void handle_trace_event(Buf trace_event) {
-    // printf("%.*s\n", (int)trace_event.size, trace_event.data);
+static bool take_token(JsonTraceParser *parser, JsonInput *input,
+                       JsonToken *token) {
+    JsonError error;
+    if (!json_scan(parser->arena, input, token, &error)) {
+        if (error.has_error) {
+            return set_error(parser, "%s", error.message);
+        }
+        return set_error(parser, "Unexpected eof");
+    }
+    return true;
+}
+
+static bool expect_token(JsonTraceParser *parser, JsonInput *input,
+                         JsonToken *token, JsonTokenType token_type) {
+    if (!take_token(parser, input, token)) {
+        return false;
+    }
+
+    if (token->type != token_type) {
+        set_error(parser, "unexpected token");
+        return false;
+    }
+
+    return true;
+}
+
+static bool skip_json_value(JsonTraceParser *parser, JsonInput *input);
+
+static bool skip_json_object(JsonTraceParser *parser, JsonInput *input) {
+    while (true) {
+        JsonToken token;
+        if (!expect_token(parser, input, &token, JsonToken_String)) {
+            return false;
+        }
+        if (!expect_token(parser, input, &token, JsonToken_Colon)) {
+            return false;
+        }
+        if (!skip_json_value(parser, input)) {
+            return false;
+        }
+
+        if (!take_token(parser, input, &token)) {
+            return false;
+        }
+        switch (token.type) {
+            case JsonToken_ObjectEnd: {
+                return true;
+            } break;
+            case JsonToken_Comma: {
+            } break;
+            default: {
+                set_error(parser, "Unexpected token");
+                return false;
+            } break;
+        }
+    }
+}
+
+static bool skip_json_array(JsonTraceParser *parser, JsonInput *input) {
+    while (true) {
+        if (!skip_json_value(parser, input)) {
+            return false;
+        }
+        JsonToken token;
+        if (!take_token(parser, input, &token)) {
+            return false;
+        }
+        switch (token.type) {
+            case JsonToken_ArrayEnd: {
+                return true;
+            } break;
+            case JsonToken_Comma: {
+            } break;
+            default: {
+                set_error(parser, "Unexpected token");
+                return false;
+            } break;
+        }
+    }
+}
+
+static bool skip_json_value(JsonTraceParser *parser, JsonInput *input) {
+    JsonToken token;
+    if (!take_token(parser, input, &token)) {
+        return false;
+    }
+    switch (token.type) {
+        case JsonToken_ObjectStart: {
+            if (!skip_json_object(parser, input)) {
+                return false;
+            }
+            return true;
+        } break;
+
+        case JsonToken_ArrayStart: {
+            if (!skip_json_array(parser, input)) {
+                return false;
+            }
+            return true;
+        } break;
+
+        case JsonToken_String:
+        case JsonToken_Number:
+        case JsonToken_True:
+        case JsonToken_False:
+        case JsonToken_Null: {
+            return true;
+        } break;
+
+        default: {
+            set_error(parser, "Unexpected token");
+            return false;
+        } break;
+    }
+}
+
+static bool parse_string(JsonTraceParser *parser, JsonInput *input,
+                         Buf *value) {
+    JsonToken token;
+    if (!expect_token(parser, input, &token, JsonToken_String)) {
+        return false;
+    }
+    *value = token.value;
+    return true;
+}
+
+static bool parse_u64(JsonTraceParser *parser, JsonInput *input, u64 *value) {
+    JsonToken token;
+    if (!take_token(parser, input, &token)) {
+        return false;
+    }
+    switch (token.type) {
+        case JsonToken_Number:
+        case JsonToken_String: {
+            if (sscanf((char *)token.value.data, "%" SCNu64, value) == 0) {
+                return set_error(parser, "Expected u64, but got '%.*s'",
+                                 token.value.size, token.value.data);
+            }
+            return true;
+        } break;
+        default: {
+            return set_error(parser, "Unexpected token");
+        } break;
+    }
+}
+
+static bool parse_u32(JsonTraceParser *parser, JsonInput *input, u32 *value) {
+    JsonToken token;
+    if (!take_token(parser, input, &token)) {
+        return false;
+    }
+    switch (token.type) {
+        case JsonToken_Number:
+        case JsonToken_String: {
+            if (sscanf((char *)token.value.data, "%" SCNu32, value) == 0) {
+                return set_error(parser, "Expected u32, but got '%.*s'",
+                                 token.value.size, token.value.data);
+            }
+            return true;
+        } break;
+        default: {
+            return set_error(parser, "Unexpected token");
+        } break;
+    }
+}
+
+static JsonTraceResult handle_trace_event(JsonTraceParser *parser, Trace *trace,
+                                          Buf trace_event) {
+    JsonInput input;
+    json_input_init(&input, trace_event);
+
+    JsonToken token;
+    if (!expect_token(parser, &input, &token, JsonToken_ObjectStart)) {
+        return JsonTraceResult_Error;
+    }
+
+    if (!take_token(parser, &input, &token)) {
+        return JsonTraceResult_Error;
+    }
+
+    if (token.type == JsonToken_ObjectEnd) {
+        return JsonTraceResult_Done;
+    }
+
+    TraceEvent event = {};
+
+    while (true) {
+        if (token.type != JsonToken_String) {
+            return set_error(parser, "Unexpected token");
+        }
+
+        Buf key = token.value;
+
+        if (!expect_token(parser, &input, &token, JsonToken_Colon)) {
+            return JsonTraceResult_Error;
+        }
+
+        if (buf_equal(key, STR_LITERAL("name"))) {
+            if (!parse_string(parser, &input, &event.name)) {
+                return JsonTraceResult_Error;
+            }
+        } else if (buf_equal(key, STR_LITERAL("cat"))) {
+            if (!parse_string(parser, &input, &event.cat)) {
+                return JsonTraceResult_Error;
+            }
+        } else if (buf_equal(key, STR_LITERAL("ph"))) {
+            Buf ph;
+            if (!parse_string(parser, &input, &ph)) {
+                return JsonTraceResult_Error;
+            }
+            if (ph.size > 0) {
+                event.ph = ph.data[0];
+            }
+        } else if (buf_equal(key, STR_LITERAL("ts"))) {
+            if (!parse_u64(parser, &input, &event.ts)) {
+                return JsonTraceResult_Error;
+            }
+        } else if (buf_equal(key, STR_LITERAL("pid"))) {
+            if (!parse_u32(parser, &input, &event.pid)) {
+                return JsonTraceResult_Error;
+            }
+        } else if (buf_equal(key, STR_LITERAL("tid"))) {
+            if (!parse_u32(parser, &input, &event.tid)) {
+                return JsonTraceResult_Error;
+            }
+        } else {
+            if (!skip_json_value(parser, &input)) {
+                return JsonTraceResult_Error;
+            }
+        }
+
+        if (!take_token(parser, &input, &token)) {
+            return JsonTraceResult_Error;
+        }
+
+        switch (token.type) {
+            case JsonToken_ObjectEnd: {
+                return JsonTraceResult_Done;
+            } break;
+            case JsonToken_Comma: {
+                if (!take_token(parser, &input, &token)) {
+                    return JsonTraceResult_Error;
+                }
+            } break;
+            default: {
+                return set_error(parser, "Unexpected token");
+            } break;
+        }
+    }
 }
 
 JsonTraceResult json_trace_parser_parse(JsonTraceParser *parser, Trace *trace,
@@ -525,7 +773,11 @@ JsonTraceResult json_trace_parser_parse(JsonTraceParser *parser, Trace *trace,
                                         trace_event =
                                             buf_slice(buf, start, end);
                                     }
-                                    handle_trace_event(trace_event);
+                                    if (handle_trace_event(parser, trace,
+                                                           trace_event) ==
+                                        JsonTraceResult_Error) {
+                                        return JsonTraceResult_Error;
+                                    }
                                     found = true;
                                 }
                             }
