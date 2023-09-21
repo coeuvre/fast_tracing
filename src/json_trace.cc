@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "src/buf.h"
+#include "src/defs.h"
 #include "src/json.h"
 
 enum {
@@ -281,6 +282,82 @@ static bool parse_string(JsonTraceParser *parser, JsonInput *input,
     return true;
 }
 
+static bool str_to_u64(Buf buf, u64 *val) {
+    static const u64 pow10[] = {
+        10000000000000000000U,
+        1000000000000000000,
+        100000000000000000,
+        10000000000000000,
+        1000000000000000,
+        100000000000000,
+        10000000000000,
+        1000000000000,
+        100000000000,
+        10000000000,
+        1000000000,
+        100000000,
+        10000000,
+        1000000,
+        100000,
+        10000,
+        1000,
+        100,
+        10,
+        1,
+    };
+
+    usize i = ARRAY_SIZE(pow10) - buf.size;
+    if (i >= ARRAY_SIZE(pow10)) {
+        return false;
+    }
+
+    u64 result = 0;
+    u8 *end = buf.data + buf.size;
+    u8 *p = buf.data;
+    for (; p != end; ++p) {
+        u8 d = *p - '0';
+        if (d >= 10) {
+            return false;
+        }
+        result += pow10[i++] * d;
+    }
+    *val = result;
+    return true;
+}
+
+static bool str_to_u32(Buf buf, u32 *val) {
+    static const u32 pow10[] = {
+        1000000000U,  //
+        100000000,    //
+        10000000,     //
+        1000000,      //
+        100000,       //
+        10000,        //
+        1000,         //
+        100,          //
+        10,           //
+        1,            //
+    };
+
+    usize i = ARRAY_SIZE(pow10) - buf.size;
+    if (i >= ARRAY_SIZE(pow10)) {
+        return false;
+    }
+
+    u32 result = 0;
+    u8 *end = buf.data + buf.size;
+    u8 *p = buf.data;
+    for (; p != end; ++p) {
+        u8 d = *p - '0';
+        if (d >= 10) {
+            return false;
+        }
+        result += pow10[i++] * d;
+    }
+    *val = result;
+    return true;
+}
+
 static bool parse_u64(JsonTraceParser *parser, JsonInput *input, u64 *value) {
     JsonToken token;
     if (!take_token(parser, input, &token)) {
@@ -289,7 +366,7 @@ static bool parse_u64(JsonTraceParser *parser, JsonInput *input, u64 *value) {
     switch (token.type) {
         case JsonToken_Number:
         case JsonToken_String: {
-            if (sscanf((char *)token.value.data, "%" SCNu64, value) == 0) {
+            if (!str_to_u64(token.value, value)) {
                 return set_error(parser, "Expected u64, but got '%.*s'",
                                  token.value.size, token.value.data);
             }
@@ -309,7 +386,7 @@ static bool parse_u32(JsonTraceParser *parser, JsonInput *input, u32 *value) {
     switch (token.type) {
         case JsonToken_Number:
         case JsonToken_String: {
-            if (sscanf((char *)token.value.data, "%" SCNu32, value) == 0) {
+            if (!str_to_u32(token.value, value)) {
                 return set_error(parser, "Expected u32, but got '%.*s'",
                                  token.value.size, token.value.data);
             }
