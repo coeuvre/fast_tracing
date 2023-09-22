@@ -389,47 +389,41 @@ static bool str_to_u32(Buf buf, u32 *val) {
     return true;
 }
 
-// static bool parse_u64(JsonTraceParser *parser, JsonInput *input, u64 *value)
-// {
-//     JsonToken token;
-//     if (!take_token(parser, input, &token)) {
-//         return false;
-//     }
-//     switch (token.type) {
-//         case JsonToken_Number:
-//         case JsonToken_String: {
-//             if (!str_to_u64(token.value, value)) {
-//                 return set_error(parser, "Expected u64, but got '%.*s'",
-//                                  token.value.size, token.value.data);
-//             }
-//             return true;
-//         } break;
-//         default: {
-//             return set_error(parser, "Unexpected token");
-//         } break;
-//     }
-// }
-//
-// static bool parse_u32(JsonTraceParser *parser, JsonInput *input, u32 *value)
-// {
-//     JsonToken token;
-//     if (!take_token(parser, input, &token)) {
-//         return false;
-//     }
-//     switch (token.type) {
-//         case JsonToken_Number:
-//         case JsonToken_String: {
-//             if (!str_to_u32(token.value, value)) {
-//                 return set_error(parser, "Expected u32, but got '%.*s'",
-//                                  token.value.size, token.value.data);
-//             }
-//             return true;
-//         } break;
-//         default: {
-//             return set_error(parser, "Unexpected token");
-//         } break;
-//     }
-// }
+static bool expect_u64(JsonTraceParser *parser, Buf buf, usize *cursor,
+                       u64 *value) {
+    if (!skip_whitespace(buf, cursor)) {
+        return set_error(parser, "Unexpected eof");
+    }
+
+    usize start = *cursor;
+    if (!skip_json_number(parser, buf, cursor)) {
+        return false;
+    }
+    usize end = *cursor;
+    if (!str_to_u64(buf_slice(buf, start, end), value)) {
+        return set_error(parser, "Expected u64, but got '%.*s'",
+                         (int)(end - start), buf.data + start);
+    }
+    return true;
+}
+
+static bool expect_u32(JsonTraceParser *parser, Buf buf, usize *cursor,
+                       u32 *value) {
+    if (!skip_whitespace(buf, cursor)) {
+        return set_error(parser, "Unexpected eof");
+    }
+
+    usize start = *cursor;
+    if (!skip_json_number(parser, buf, cursor)) {
+        return false;
+    }
+    usize end = *cursor;
+    if (!str_to_u32(buf_slice(buf, start, end), value)) {
+        return set_error(parser, "Expected u32, but got '%.*s'",
+                         (int)(end - start), buf.data + start);
+    }
+    return true;
+}
 
 static JsonTraceResult handle_trace_event(JsonTraceParser *parser, Trace *trace,
                                           Buf trace_event) {
@@ -437,6 +431,8 @@ static JsonTraceResult handle_trace_event(JsonTraceParser *parser, Trace *trace,
     if (!expect_char(parser, trace_event, &cursor, '{')) {
         return JsonTraceResult_Error;
     }
+
+    TraceEvent event = {};
 
     while (!accept_char(parser, trace_event, &cursor, '}')) {
         accept_char(parser, trace_event, &cursor, ',');
@@ -446,8 +442,38 @@ static JsonTraceResult handle_trace_event(JsonTraceParser *parser, Trace *trace,
         }
         expect_char(parser, trace_event, &cursor, ':');
 
-        if (!skip_json_value(parser, trace_event, &cursor)) {
-            return JsonTraceResult_Error;
+        if (buf_equal(key, STR_LITERAL("name"))) {
+            if (!expect_string(parser, trace_event, &cursor, &event.name)) {
+                return JsonTraceResult_Error;
+            }
+        } else if (buf_equal(key, STR_LITERAL("cat"))) {
+            if (!expect_string(parser, trace_event, &cursor, &event.cat)) {
+                return JsonTraceResult_Error;
+            }
+        } else if (buf_equal(key, STR_LITERAL("ph"))) {
+            Buf str;
+            if (!expect_string(parser, trace_event, &cursor, &str)) {
+                return JsonTraceResult_Error;
+            }
+            if (str.size > 0) {
+                event.ph = str.data[0];
+            }
+        } else if (buf_equal(key, STR_LITERAL("ts"))) {
+            if (!expect_u64(parser, trace_event, &cursor, &event.ts)) {
+                return JsonTraceResult_Error;
+            }
+        } else if (buf_equal(key, STR_LITERAL("pid"))) {
+            if (!expect_u32(parser, trace_event, &cursor, &event.pid)) {
+                return JsonTraceResult_Error;
+            }
+        } else if (buf_equal(key, STR_LITERAL("tid"))) {
+            if (!expect_u32(parser, trace_event, &cursor, &event.tid)) {
+                return JsonTraceResult_Error;
+            }
+        } else {
+            if (!skip_json_value(parser, trace_event, &cursor)) {
+                return JsonTraceResult_Error;
+            }
         }
     }
 
