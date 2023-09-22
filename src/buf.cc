@@ -16,3 +16,10 @@ Buf buf_slice(Buf buf, usize start, usize end) {
     ASSERT(end <= buf.size);
     return Buf{.data = (u8 *)buf.data + start, .size = end - start};
 }
+
+bool buf_starts_with(Buf buf, Buf prefix) {
+    if (buf.size < prefix.size) {
+        return false;
+    }
+    return memcmp(buf.data, prefix.data, prefix.size) == 0;
+}

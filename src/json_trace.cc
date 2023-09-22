@@ -156,130 +156,161 @@ static bool is_stack_empty(JsonTraceParser *parser) {
     return parser->stack_cursor == 0;
 }
 
-static bool take_token(JsonTraceParser *parser, JsonInput *input,
-                       JsonToken *token) {
-    JsonError error;
-    if (!json_scan(parser->arena, input, token, &error)) {
-        if (error.has_error) {
-            return set_error(parser, "%s", error.message);
+static bool accept_char(JsonTraceParser *parser, Buf buf, usize *cursor,
+                        u8 expected) {
+    if (!skip_whitespace(buf, cursor)) {
+        return false;
+    }
+
+    u8 ch = buf.data[*cursor];
+    if (ch == expected) {
+        *cursor += 1;
+        return true;
+    }
+
+    return false;
+}
+
+static bool expect_char(JsonTraceParser *parser, Buf buf, usize *cursor,
+                        u8 expected) {
+    if (!accept_char(parser, buf, cursor, expected)) {
+        u8 ch = 0;
+        if (*cursor < buf.size) {
+            ch = buf.data[*cursor];
         }
+        return set_error(parser, "Expected '%c', but got '%c'", expected, ch);
+    }
+
+    return true;
+}
+
+static bool expect_string(JsonTraceParser *parser, Buf buf, usize *cursor,
+                          Buf *out) {
+    if (!expect_char(parser, buf, cursor, '"')) {
+        return false;
+    }
+
+    usize start = *cursor;
+    while (*cursor < buf.size) {
+        u8 ch = buf.data[(*cursor)++];
+        if (ch == '"' && buf.data[*cursor - 2] != '\\') {
+            *out = buf_slice(buf, start, *cursor - 1);
+            return true;
+        }
+    }
+
+    Buf view = buf_slice(buf, start - 1, buf.size);
+    return set_error(parser, "Unexpected eof before reaching '\"': %.*s",
+                     (int)view.size, view.data);
+}
+
+static bool skip_json_value(JsonTraceParser *parser, Buf buf, usize *cursor);
+
+static bool skip_json_object(JsonTraceParser *parser, Buf buf, usize *cursor) {
+    while (!accept_char(parser, buf, cursor, '}')) {
+        accept_char(parser, buf, cursor, ',');
+        Buf key;
+        if (!expect_string(parser, buf, cursor, &key)) {
+            return false;
+        }
+        if (!expect_char(parser, buf, cursor, ':')) {
+            return false;
+        }
+        if (!skip_json_value(parser, buf, cursor)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool skip_json_array(JsonTraceParser *parser, Buf buf, usize *cursor) {
+    while (!accept_char(parser, buf, cursor, ']')) {
+        accept_char(parser, buf, cursor, ',');
+        if (!skip_json_value(parser, buf, cursor)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool skip_json_number(JsonTraceParser *parser, Buf buf, usize *cursor) {
+    while (*cursor < buf.size) {
+        u8 ch = buf.data[*cursor];
+        switch (ch) {
+            case '0' ... '9':
+            case '.':
+            case 'e':
+            case 'E':
+            case '-':
+            case '+': {
+                *cursor += 1;
+            } break;
+
+            default: {
+                return true;
+            } break;
+        }
+    }
+    return true;
+}
+
+static bool skip_json_value(JsonTraceParser *parser, Buf buf, usize *cursor) {
+    if (!skip_whitespace(buf, cursor)) {
         return set_error(parser, "Unexpected eof");
     }
-    return true;
-}
 
-static bool expect_token(JsonTraceParser *parser, JsonInput *input,
-                         JsonToken *token, JsonTokenType token_type) {
-    if (!take_token(parser, input, token)) {
-        return false;
-    }
+    u8 ch = buf.data[(*cursor)++];
+    switch (ch) {
+        case '{': {
+            return skip_json_object(parser, buf, cursor);
+        } break;
 
-    if (token->type != token_type) {
-        set_error(parser, "unexpected token");
-        return false;
-    }
+        case '[': {
+            return skip_json_array(parser, buf, cursor);
+        } break;
 
-    return true;
-}
+        case '"': {
+            *cursor -= 1;
+            Buf s;
+            return expect_string(parser, buf, cursor, &s);
+        } break;
 
-static bool skip_json_value(JsonTraceParser *parser, JsonInput *input);
+        case '-':
+        case '0' ... '9': {
+            return skip_json_number(parser, buf, cursor);
+        } break;
 
-static bool skip_json_object(JsonTraceParser *parser, JsonInput *input) {
-    while (true) {
-        JsonToken token;
-        if (!expect_token(parser, input, &token, JsonToken_String)) {
-            return false;
-        }
-        if (!expect_token(parser, input, &token, JsonToken_Colon)) {
-            return false;
-        }
-        if (!skip_json_value(parser, input)) {
-            return false;
-        }
-
-        if (!take_token(parser, input, &token)) {
-            return false;
-        }
-        switch (token.type) {
-            case JsonToken_ObjectEnd: {
-                return true;
-            } break;
-            case JsonToken_Comma: {
-            } break;
-            default: {
-                set_error(parser, "Unexpected token");
-                return false;
-            } break;
-        }
-    }
-}
-
-static bool skip_json_array(JsonTraceParser *parser, JsonInput *input) {
-    while (true) {
-        if (!skip_json_value(parser, input)) {
-            return false;
-        }
-        JsonToken token;
-        if (!take_token(parser, input, &token)) {
-            return false;
-        }
-        switch (token.type) {
-            case JsonToken_ArrayEnd: {
-                return true;
-            } break;
-            case JsonToken_Comma: {
-            } break;
-            default: {
-                set_error(parser, "Unexpected token");
-                return false;
-            } break;
-        }
-    }
-}
-
-static bool skip_json_value(JsonTraceParser *parser, JsonInput *input) {
-    JsonToken token;
-    if (!take_token(parser, input, &token)) {
-        return false;
-    }
-    switch (token.type) {
-        case JsonToken_ObjectStart: {
-            if (!skip_json_object(parser, input)) {
-                return false;
+        case 't': {
+            Buf s = STR_LITERAL("rue");
+            if (!buf_starts_with(buf_slice(buf, *cursor, buf.size), s)) {
+                return set_error(parser, "Unexpected character %c", ch);
             }
+            *cursor += s.size;
             return true;
         } break;
 
-        case JsonToken_ArrayStart: {
-            if (!skip_json_array(parser, input)) {
-                return false;
+        case 'f': {
+            Buf s = STR_LITERAL("alse");
+            if (!buf_starts_with(buf_slice(buf, *cursor, buf.size), s)) {
+                return set_error(parser, "Unexpected character %c", ch);
             }
+            *cursor += s.size;
             return true;
         } break;
 
-        case JsonToken_String:
-        case JsonToken_Number:
-        case JsonToken_True:
-        case JsonToken_False:
-        case JsonToken_Null: {
+        case 'n': {
+            Buf s = STR_LITERAL("ull");
+            if (!buf_starts_with(buf_slice(buf, *cursor, buf.size), s)) {
+                return set_error(parser, "Unexpected character %c", ch);
+            }
+            *cursor += s.size;
             return true;
         } break;
 
         default: {
-            set_error(parser, "Unexpected token");
-            return false;
+            return set_error(parser, "Unexpected character %c", ch);
         } break;
     }
-}
-
-static bool parse_string(JsonTraceParser *parser, JsonInput *input,
-                         Buf *value) {
-    JsonToken token;
-    if (!expect_token(parser, input, &token, JsonToken_String)) {
-        return false;
-    }
-    *value = token.value;
-    return true;
 }
 
 static bool str_to_u64(Buf buf, u64 *val) {
@@ -358,129 +389,69 @@ static bool str_to_u32(Buf buf, u32 *val) {
     return true;
 }
 
-static bool parse_u64(JsonTraceParser *parser, JsonInput *input, u64 *value) {
-    JsonToken token;
-    if (!take_token(parser, input, &token)) {
-        return false;
-    }
-    switch (token.type) {
-        case JsonToken_Number:
-        case JsonToken_String: {
-            if (!str_to_u64(token.value, value)) {
-                return set_error(parser, "Expected u64, but got '%.*s'",
-                                 token.value.size, token.value.data);
-            }
-            return true;
-        } break;
-        default: {
-            return set_error(parser, "Unexpected token");
-        } break;
-    }
-}
-
-static bool parse_u32(JsonTraceParser *parser, JsonInput *input, u32 *value) {
-    JsonToken token;
-    if (!take_token(parser, input, &token)) {
-        return false;
-    }
-    switch (token.type) {
-        case JsonToken_Number:
-        case JsonToken_String: {
-            if (!str_to_u32(token.value, value)) {
-                return set_error(parser, "Expected u32, but got '%.*s'",
-                                 token.value.size, token.value.data);
-            }
-            return true;
-        } break;
-        default: {
-            return set_error(parser, "Unexpected token");
-        } break;
-    }
-}
+// static bool parse_u64(JsonTraceParser *parser, JsonInput *input, u64 *value)
+// {
+//     JsonToken token;
+//     if (!take_token(parser, input, &token)) {
+//         return false;
+//     }
+//     switch (token.type) {
+//         case JsonToken_Number:
+//         case JsonToken_String: {
+//             if (!str_to_u64(token.value, value)) {
+//                 return set_error(parser, "Expected u64, but got '%.*s'",
+//                                  token.value.size, token.value.data);
+//             }
+//             return true;
+//         } break;
+//         default: {
+//             return set_error(parser, "Unexpected token");
+//         } break;
+//     }
+// }
+//
+// static bool parse_u32(JsonTraceParser *parser, JsonInput *input, u32 *value)
+// {
+//     JsonToken token;
+//     if (!take_token(parser, input, &token)) {
+//         return false;
+//     }
+//     switch (token.type) {
+//         case JsonToken_Number:
+//         case JsonToken_String: {
+//             if (!str_to_u32(token.value, value)) {
+//                 return set_error(parser, "Expected u32, but got '%.*s'",
+//                                  token.value.size, token.value.data);
+//             }
+//             return true;
+//         } break;
+//         default: {
+//             return set_error(parser, "Unexpected token");
+//         } break;
+//     }
+// }
 
 static JsonTraceResult handle_trace_event(JsonTraceParser *parser, Trace *trace,
                                           Buf trace_event) {
-    JsonInput input;
-    json_input_init(&input, trace_event);
-
-    JsonToken token;
-    if (!expect_token(parser, &input, &token, JsonToken_ObjectStart)) {
+    usize cursor = 0;
+    if (!expect_char(parser, trace_event, &cursor, '{')) {
         return JsonTraceResult_Error;
     }
 
-    if (!take_token(parser, &input, &token)) {
-        return JsonTraceResult_Error;
-    }
-
-    if (token.type == JsonToken_ObjectEnd) {
-        return JsonTraceResult_Done;
-    }
-
-    TraceEvent event = {};
-
-    while (true) {
-        if (token.type != JsonToken_String) {
-            return set_error(parser, "Unexpected token");
-        }
-
-        Buf key = token.value;
-
-        if (!expect_token(parser, &input, &token, JsonToken_Colon)) {
+    while (!accept_char(parser, trace_event, &cursor, '}')) {
+        accept_char(parser, trace_event, &cursor, ',');
+        Buf key;
+        if (!expect_string(parser, trace_event, &cursor, &key)) {
             return JsonTraceResult_Error;
         }
+        expect_char(parser, trace_event, &cursor, ':');
 
-        if (buf_equal(key, STR_LITERAL("name"))) {
-            if (!parse_string(parser, &input, &event.name)) {
-                return JsonTraceResult_Error;
-            }
-        } else if (buf_equal(key, STR_LITERAL("cat"))) {
-            if (!parse_string(parser, &input, &event.cat)) {
-                return JsonTraceResult_Error;
-            }
-        } else if (buf_equal(key, STR_LITERAL("ph"))) {
-            Buf ph;
-            if (!parse_string(parser, &input, &ph)) {
-                return JsonTraceResult_Error;
-            }
-            if (ph.size > 0) {
-                event.ph = ph.data[0];
-            }
-        } else if (buf_equal(key, STR_LITERAL("ts"))) {
-            if (!parse_u64(parser, &input, &event.ts)) {
-                return JsonTraceResult_Error;
-            }
-        } else if (buf_equal(key, STR_LITERAL("pid"))) {
-            if (!parse_u32(parser, &input, &event.pid)) {
-                return JsonTraceResult_Error;
-            }
-        } else if (buf_equal(key, STR_LITERAL("tid"))) {
-            if (!parse_u32(parser, &input, &event.tid)) {
-                return JsonTraceResult_Error;
-            }
-        } else {
-            if (!skip_json_value(parser, &input)) {
-                return JsonTraceResult_Error;
-            }
-        }
-
-        if (!take_token(parser, &input, &token)) {
+        if (!skip_json_value(parser, trace_event, &cursor)) {
             return JsonTraceResult_Error;
         }
-
-        switch (token.type) {
-            case JsonToken_ObjectEnd: {
-                return JsonTraceResult_Done;
-            } break;
-            case JsonToken_Comma: {
-                if (!take_token(parser, &input, &token)) {
-                    return JsonTraceResult_Error;
-                }
-            } break;
-            default: {
-                return set_error(parser, "Unexpected token");
-            } break;
-        }
     }
+
+    return JsonTraceResult_Done;
 }
 
 JsonTraceResult json_trace_parser_parse(JsonTraceParser *parser, Trace *trace,
