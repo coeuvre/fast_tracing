@@ -7,6 +7,7 @@
 
 struct JsonTraceParserState_ArrayFormat {
     u8 last_char;
+    bool is_in_str;
 };
 
 struct JsonTraceParserState_SkipChar {
@@ -38,6 +39,9 @@ enum JsonTraceResult {
     JsonTraceResult_Error,
     JsonTraceResult_Done,
     JsonTraceResult_NeedMoreInput,
+
+    // Internal only
+    JsonTraceResult_Continue,
 };
 
 void json_trace_parser_init(JsonTraceParser *parser, MemoryArena *arena);

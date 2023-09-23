@@ -52,15 +52,17 @@ enum {
 static const usize INITIAL_BUF_SIZE = 4096;
 
 static void ensure_buf_size(MemoryArena *arena, Buf *buf, usize size) {
-    usize new_size = max(INITIAL_BUF_SIZE, buf->size);
+    usize new_size = buf->size;
+    if (size <= new_size) {
+        return;
+    }
+
     while (new_size < size) {
         new_size <<= 1;
     }
-    if (new_size > buf->size) {
-        buf->size = new_size;
-        buf->data = (u8 *)memory_arena_realloc(arena, buf->data, new_size);
-        ASSERT(buf->data);
-    }
+    buf->size = new_size;
+    buf->data = (u8 *)memory_arena_realloc(arena, buf->data, new_size);
+    ASSERT(buf->data);
 }
 
 static JsonTraceResult set_error(JsonTraceParser *parser, const char *fmt,
@@ -97,6 +99,12 @@ void json_trace_parser_init(JsonTraceParser *parser, MemoryArena *arena) {
         .arena = arena,
         .state = State_Init,
     };
+
+    parser->stack.size = INITIAL_BUF_SIZE;
+    parser->stack.data = (u8 *)memory_arena_alloc(arena, parser->stack.size);
+
+    parser->buf.size = INITIAL_BUF_SIZE;
+    parser->buf.data = (u8 *)memory_arena_alloc(arena, parser->buf.size);
 }
 
 void json_trace_parser_deinit(JsonTraceParser *parser) {
@@ -473,343 +481,181 @@ static JsonTraceResult handle_trace_event(JsonTraceParser *parser, Trace *trace,
     return JsonTraceResult_Done;
 }
 
-JsonTraceResult json_trace_parser_parse(JsonTraceParser *parser, Trace *trace,
-                                        Buf buf) {
-    usize cursor = 0;
-    while (true) {
-        switch (parser->state) {
-            case State_Init: {
-                if (!skip_whitespace(buf, &cursor)) {
-                    return JsonTraceResult_NeedMoreInput;
-                }
-                u8 ch = buf.data[cursor];
-                switch (ch) {
-                    case '{': {
-                        parser->state = State_ObjectFormat;
-                        parser->has_object_format = true;
-                        cursor += 1;
-                    } break;
+static JsonTraceResult on_state_init(JsonTraceParser *parser, Buf buf,
+                                     usize *cursor) {
+    if (!skip_whitespace(buf, cursor)) {
+        return JsonTraceResult_NeedMoreInput;
+    }
+    u8 ch = buf.data[*cursor];
+    switch (ch) {
+        case '{': {
+            parser->state = State_ObjectFormat;
+            parser->has_object_format = true;
+            (*cursor) += 1;
+        } break;
 
-                    case '[': {
-                        parser->state = State_ArrayFormat;
-                        parser->buf_cursor = 0;
-                        cursor += 1;
-                    } break;
+        case '[': {
+            parser->state = State_ArrayFormat;
+            parser->buf_cursor = 0;
+            (*cursor) += 1;
+        } break;
 
-                    default: {
-                        return set_error(
-                            parser,
-                            "Invalid JSON Trace: expected '{' or '[' but got "
-                            "'%c'",
-                            ch);
-                    } break;
-                }
-            } break;
+        default: {
+            return set_error(parser,
+                             "Invalid JSON Trace: expected '{' or '[' but got "
+                             "'%c'",
+                             ch);
+        } break;
+    }
 
-            case State_ObjectFormat: {
-                if (!skip_whitespace(buf, &cursor)) {
-                    return JsonTraceResult_NeedMoreInput;
-                }
+    return JsonTraceResult_Continue;
+}
 
-                u8 ch = buf.data[cursor];
-                switch (ch) {
-                    case '"': {
-                        cursor += 1;
-                        usize start = cursor;
+static JsonTraceResult on_state_object_format(JsonTraceParser *parser, Buf buf,
+                                              usize *cursor) {
+    if (!skip_whitespace(buf, cursor)) {
+        return JsonTraceResult_NeedMoreInput;
+    }
 
-                        ASSERT(cursor <= buf.size);
-                        while (true) {
-                            if (cursor == buf.size) {
-                                parser->buf_cursor = 0;
-                                save_input(parser, &parser->buf_cursor,
-                                           buf_slice(buf, start, cursor));
-                                parser->state =
-                                    State_ObjectFormat_Key_Continued;
-                                return JsonTraceResult_NeedMoreInput;
-                            }
+    u8 ch = buf.data[*cursor];
+    switch (ch) {
+        case '"': {
+            (*cursor) += 1;
+            usize start = *cursor;
 
-                            ch = buf.data[cursor++];
-                            if (ch == '"' && buf.data[cursor - 2] != '\\') {
-                                Buf key = buf_slice(buf, start, cursor - 1);
-                                handle_object_format_key(parser, key);
-                                break;
-                            }
-                        }
-                    } break;
-
-                    case '}': {
-                        parser->state = State_Done;
-                        return JsonTraceResult_Done;
-                    } break;
-
-                    default: {
-                        return set_error(
-                            parser,
-                            "Invalid JSON Trace: expected '\"' but got "
-                            "'%c'",
-                            ch);
-                    } break;
-                }
-            } break;
-
-            case State_ObjectFormat_Key_Continued: {
-                ASSERT(cursor == 0);
-                bool found_key = false;
-                while (cursor < buf.size) {
-                    u8 ch = buf.data[cursor];
-                    if (ch == '"') {
-                        u8 last_char;
-                        if (cursor == 0) {
-                            last_char =
-                                parser->buf.data[parser->buf_cursor - 1];
-                        } else {
-                            last_char = buf.data[cursor - 1];
-                        }
-
-                        if (last_char != '\\') {
-                            save_input(parser, &parser->buf_cursor,
-                                       buf_slice(buf, 0, cursor));
-                            Buf key =
-                                buf_slice(parser->buf, 0, parser->buf_cursor);
-                            handle_object_format_key(parser, key);
-                            found_key = true;
-                            break;
-                        }
-                    }
-                }
-                if (!found_key) {
-                    save_input(parser, &parser->buf_cursor, buf);
-                    return JsonTraceResult_NeedMoreInput;
-                }
-            } break;
-
-            case State_ObjectFormat_TraceEvents: {
-                if (!skip_whitespace(buf, &cursor)) {
+            ASSERT(*cursor <= buf.size);
+            while (true) {
+                if (*cursor == buf.size) {
+                    parser->buf_cursor = 0;
+                    save_input(parser, &parser->buf_cursor,
+                               buf_slice(buf, start, *cursor));
+                    parser->state = State_ObjectFormat_Key_Continued;
                     return JsonTraceResult_NeedMoreInput;
                 }
 
-                u8 ch = buf.data[cursor];
-                if (ch != '[') {
-                    return set_error(
-                        parser, "Invalid JSON Trace: expected '[' but got '%c'",
-                        ch);
+                ch = buf.data[(*cursor)++];
+                if (ch == '"' && buf.data[*cursor - 2] != '\\') {
+                    Buf key = buf_slice(buf, start, *cursor - 1);
+                    handle_object_format_key(parser, key);
+                    break;
                 }
+            }
+        } break;
 
-                cursor += 1;
+        case '}': {
+            parser->state = State_Done;
+            return JsonTraceResult_Done;
+        } break;
 
-                parser->state = State_ArrayFormat;
-                parser->buf_cursor = 0;
+        default: {
+            return set_error(parser,
+                             "Invalid JSON Trace: expected '\"' but got "
+                             "'%c'",
+                             ch);
+        } break;
+    }
+
+    return JsonTraceResult_Continue;
+}
+
+static JsonTraceResult on_state_object_format_trace_events(
+    JsonTraceParser *parser, Buf buf, usize *cursor) {
+    if (!skip_whitespace(buf, cursor)) {
+        return JsonTraceResult_NeedMoreInput;
+    }
+
+    u8 ch = buf.data[*cursor];
+    if (ch != '[') {
+        return set_error(parser,
+                         "Invalid JSON Trace: expected '[' but got '%c'", ch);
+    }
+
+    (*cursor) += 1;
+
+    parser->state = State_ArrayFormat;
+    parser->buf_cursor = 0;
+
+    return JsonTraceResult_Continue;
+}
+
+static JsonTraceResult on_state_object_format_key_continued(
+    JsonTraceParser *parser, Buf buf, usize *cursor) {
+    ASSERT(*cursor == 0);
+    bool found_key = false;
+    while (*cursor < buf.size) {
+        u8 ch = buf.data[*cursor];
+        if (ch == '"') {
+            u8 last_char;
+            if (*cursor == 0) {
+                last_char = parser->buf.data[parser->buf_cursor - 1];
+            } else {
+                last_char = buf.data[*cursor - 1];
+            }
+
+            if (last_char != '\\') {
+                save_input(parser, &parser->buf_cursor,
+                           buf_slice(buf, 0, *cursor));
+                Buf key = buf_slice(parser->buf, 0, parser->buf_cursor);
+                handle_object_format_key(parser, key);
+                found_key = true;
+                break;
+            }
+        }
+    }
+    if (!found_key) {
+        save_input(parser, &parser->buf_cursor, buf);
+        return JsonTraceResult_NeedMoreInput;
+    }
+    return JsonTraceResult_Continue;
+}
+
+static JsonTraceResult on_state_object_format_unknown_key(
+    JsonTraceParser *parser, Buf buf, usize *cursor) {
+    // skip until ',' or '}' that are not inside a string, array or
+    // object.
+
+    if (!parser->unknown_key.init) {
+        if (!skip_whitespace(buf, cursor)) {
+            return JsonTraceResult_NeedMoreInput;
+        }
+
+        parser->stack_cursor = 0;
+        u8 ch = buf.data[(*cursor)++];
+        switch (ch) {
+            case '"':
+            case '{':
+            case '[': {
+                push_stack(parser, ch);
             } break;
+            default: {
+            } break;
+        }
+        parser->unknown_key.last_char = ch;
+        parser->unknown_key.init = true;
+    }
 
-            case State_ObjectFormat_UnknownKey: {
-                // skip until ',' or '}' that are not inside a string, array or
-                // object.
-
-                if (!parser->unknown_key.init) {
-                    if (!skip_whitespace(buf, &cursor)) {
-                        return JsonTraceResult_NeedMoreInput;
-                    }
-
-                    parser->stack_cursor = 0;
-                    u8 ch = buf.data[cursor++];
-                    switch (ch) {
-                        case '"':
-                        case '{':
-                        case '[': {
-                            push_stack(parser, ch);
-                        } break;
-                        default: {
-                        } break;
+    if (parser->stack_cursor > 0) {
+        bool done = false;
+        switch (parser->stack.data[0]) {
+            case '"': {
+                while (*cursor < buf.size && !done) {
+                    u8 ch = buf.data[(*cursor)++];
+                    if (ch == '"' && parser->unknown_key.last_char != '\\') {
+                        pop_stack(parser);
+                        ASSERT(is_stack_empty(parser));
+                        parser->state = State_ObjectFormat_AfterValue;
+                        done = true;
                     }
                     parser->unknown_key.last_char = ch;
-                    parser->unknown_key.init = true;
-                }
-
-                if (parser->stack_cursor > 0) {
-                    bool done = false;
-                    switch (parser->stack.data[0]) {
-                        case '"': {
-                            while (cursor < buf.size && !done) {
-                                u8 ch = buf.data[cursor++];
-                                if (ch == '"' &&
-                                    parser->unknown_key.last_char != '\\') {
-                                    pop_stack(parser);
-                                    ASSERT(is_stack_empty(parser));
-                                    parser->state =
-                                        State_ObjectFormat_AfterValue;
-                                    done = true;
-                                }
-                                parser->unknown_key.last_char = ch;
-                            }
-                        } break;
-
-                        case '{': {
-                            while (cursor < buf.size && !done) {
-                                u8 ch = buf.data[cursor++];
-                                switch (ch) {
-                                    case '"': {
-                                        if (parser->unknown_key.last_char !=
-                                            '\\') {
-                                            if (is_stack_top(parser, '"')) {
-                                                pop_stack(parser);
-                                            } else {
-                                                push_stack(parser, '"');
-                                            }
-                                        }
-                                    } break;
-
-                                    case '{': {
-                                        if (!is_stack_top(parser, '"')) {
-                                            push_stack(parser, '{');
-                                        }
-                                    } break;
-
-                                    case '}': {
-                                        if (!is_stack_top(parser, '"')) {
-                                            if (is_stack_empty(parser)) {
-                                                parser->state =
-                                                    State_ObjectFormat_AfterValue;
-                                                done = true;
-                                            } else {
-                                                pop_stack(parser);
-                                            }
-                                        }
-                                    } break;
-                                }
-
-                                parser->unknown_key.last_char = ch;
-                            }
-                        } break;
-
-                        case '[': {
-                            while (cursor < buf.size && !done) {
-                                u8 ch = buf.data[cursor++];
-                                switch (ch) {
-                                    case '"': {
-                                        if (parser->unknown_key.last_char !=
-                                            '\\') {
-                                            if (is_stack_top(parser, '"')) {
-                                                pop_stack(parser);
-                                            } else {
-                                                push_stack(parser, '"');
-                                            }
-                                        }
-                                    } break;
-
-                                    case '[': {
-                                        if (!is_stack_top(parser, '"')) {
-                                            push_stack(parser, '[');
-                                        }
-                                    } break;
-
-                                    case ']': {
-                                        if (!is_stack_top(parser, '"')) {
-                                            if (is_stack_empty(parser)) {
-                                                parser->state =
-                                                    State_ObjectFormat_AfterValue;
-                                                done = true;
-                                            } else {
-                                                pop_stack(parser);
-                                            }
-                                        }
-                                    } break;
-                                }
-
-                                parser->unknown_key.last_char = ch;
-                            }
-                        } break;
-
-                        default: {
-                            UNREACHABLE;
-                        } break;
-                    }
-                    if (!done) {
-                        return JsonTraceResult_NeedMoreInput;
-                    }
-                } else {
-                    bool found = false;
-                    bool done = false;
-                    while (cursor < buf.size) {
-                        u8 ch = buf.data[cursor++];
-                        if (ch == ',') {
-                            found = true;
-                            break;
-                        } else if (ch == '}') {
-                            found = true;
-                            done = true;
-                            break;
-                        }
-                    }
-                    if (found) {
-                        if (done) {
-                            parser->state = State_Done;
-                            return JsonTraceResult_Done;
-                        } else {
-                            parser->state = State_ObjectFormat;
-                        }
-                    }
                 }
             } break;
 
-            case State_ObjectFormat_AfterValue: {
-                if (!skip_whitespace(buf, &cursor)) {
-                    return JsonTraceResult_NeedMoreInput;
-                }
-
-                u8 ch = buf.data[cursor];
-                switch (ch) {
-                    case ',': {
-                        cursor += 1;
-                        parser->state = State_ObjectFormat;
-                    } break;
-
-                    case '}': {
-                        cursor += 1;
-                        parser->state = State_Done;
-                        return JsonTraceResult_Done;
-                    } break;
-
-                    default: {
-                        return set_error(
-                            parser,
-                            "Invalid JSON Trace: expected ',' or '}' but got "
-                            "'%c'",
-                            ch);
-                    } break;
-                }
-            } break;
-
-            case State_ArrayFormat: {
-                usize start = cursor;
-
-                if (parser->buf_cursor == 0) {
-                    if (!skip_whitespace(buf, &cursor)) {
-                        return JsonTraceResult_NeedMoreInput;
-                    }
-
-                    u8 ch = buf.data[cursor];
-                    if (ch != '{') {
-                        return set_error(
-                            parser,
-                            "Invalid JSON Trace: expected '{' but got "
-                            "'%c'",
-                            ch);
-                    }
-
-                    parser->stack_cursor = 0;
-                    push_stack(parser, '{');
-                    parser->array_format.last_char = ch;
-
-                    start = cursor;
-                    cursor += 1;
-                }
-
-                bool found = false;
-                while (cursor < buf.size && !found) {
-                    u8 ch = buf.data[cursor++];
+            case '{': {
+                while (*cursor < buf.size && !done) {
+                    u8 ch = buf.data[(*cursor)++];
                     switch (ch) {
                         case '"': {
-                            if (parser->array_format.last_char != '\\') {
+                            if (parser->unknown_key.last_char != '\\') {
                                 if (is_stack_top(parser, '"')) {
                                     pop_stack(parser);
                                 } else {
@@ -826,96 +672,341 @@ JsonTraceResult json_trace_parser_parse(JsonTraceParser *parser, Trace *trace,
 
                         case '}': {
                             if (!is_stack_top(parser, '"')) {
-                                pop_stack(parser);
-
                                 if (is_stack_empty(parser)) {
-                                    usize end = cursor;
-                                    Buf trace_event;
-                                    if (parser->buf_cursor) {
-                                        save_input(parser, &parser->buf_cursor,
-                                                   buf_slice(buf, start, end));
-                                        trace_event = buf_slice(
-                                            parser->buf, 0, parser->buf_cursor);
-                                    } else {
-                                        trace_event =
-                                            buf_slice(buf, start, end);
-                                    }
-                                    if (handle_trace_event(parser, trace,
-                                                           trace_event) ==
-                                        JsonTraceResult_Error) {
-                                        return JsonTraceResult_Error;
-                                    }
-                                    found = true;
+                                    parser->state =
+                                        State_ObjectFormat_AfterValue;
+                                    done = true;
+                                } else {
+                                    pop_stack(parser);
+                                }
+                            }
+                        } break;
+                    }
+
+                    parser->unknown_key.last_char = ch;
+                }
+            } break;
+
+            case '[': {
+                while ((*cursor) < buf.size && !done) {
+                    u8 ch = buf.data[(*cursor)++];
+                    switch (ch) {
+                        case '"': {
+                            if (parser->unknown_key.last_char != '\\') {
+                                if (is_stack_top(parser, '"')) {
+                                    pop_stack(parser);
+                                } else {
+                                    push_stack(parser, '"');
                                 }
                             }
                         } break;
 
-                        default: {
+                        case '[': {
+                            if (!is_stack_top(parser, '"')) {
+                                push_stack(parser, '[');
+                            }
+                        } break;
+
+                        case ']': {
+                            if (!is_stack_top(parser, '"')) {
+                                if (is_stack_empty(parser)) {
+                                    parser->state =
+                                        State_ObjectFormat_AfterValue;
+                                    done = true;
+                                } else {
+                                    pop_stack(parser);
+                                }
+                            }
                         } break;
                     }
-                    parser->array_format.last_char = ch;
-                }
 
-                if (found) {
-                    parser->state = State_ArrayFormat_AfterTraceEvent;
+                    parser->unknown_key.last_char = ch;
+                }
+            } break;
+
+            default: {
+                UNREACHABLE;
+            } break;
+        }
+        if (!done) {
+            return JsonTraceResult_NeedMoreInput;
+        }
+    } else {
+        bool found = false;
+        bool done = false;
+        while (*cursor < buf.size) {
+            u8 ch = buf.data[(*cursor)++];
+            if (ch == ',') {
+                found = true;
+                break;
+            } else if (ch == '}') {
+                found = true;
+                done = true;
+                break;
+            }
+        }
+        if (found) {
+            if (done) {
+                parser->state = State_Done;
+                return JsonTraceResult_Done;
+            } else {
+                parser->state = State_ObjectFormat;
+            }
+        }
+    }
+
+    return JsonTraceResult_Continue;
+}
+
+static JsonTraceResult on_state_object_format_after_value(
+    JsonTraceParser *parser, Buf buf, usize *cursor) {
+    if (!skip_whitespace(buf, cursor)) {
+        return JsonTraceResult_NeedMoreInput;
+    }
+
+    u8 ch = buf.data[*cursor];
+    switch (ch) {
+        case ',': {
+            (*cursor)++;
+            parser->state = State_ObjectFormat;
+        } break;
+
+        case '}': {
+            (*cursor)++;
+            parser->state = State_Done;
+            return JsonTraceResult_Done;
+        } break;
+
+        default: {
+            return set_error(parser,
+                             "Invalid JSON Trace: expected ',' or '}' but got "
+                             "'%c'",
+                             ch);
+        } break;
+    }
+
+    return JsonTraceResult_Continue;
+}
+
+static JsonTraceResult on_state_array_format(JsonTraceParser *parser, Buf buf,
+                                             usize *cursor, Trace *trace) {
+    usize start = *cursor;
+
+    if (parser->buf_cursor == 0) {
+        if (!skip_whitespace(buf, cursor)) {
+            return JsonTraceResult_NeedMoreInput;
+        }
+
+        u8 ch = buf.data[*cursor];
+        if (ch != '{') {
+            return set_error(parser,
+                             "Invalid JSON Trace: expected '{' but got "
+                             "'%c'",
+                             ch);
+        }
+
+        parser->stack_cursor = 0;
+        push_stack(parser, '{');
+        parser->array_format.last_char = ch;
+        parser->array_format.is_in_str = false;
+
+        start = *cursor;
+        (*cursor) += 1;
+    }
+
+    bool found = false;
+    while (*cursor < buf.size && !found) {
+        u8 ch = buf.data[(*cursor)++];
+        switch (ch) {
+            case '"': {
+                if (parser->array_format.is_in_str) {
+                    if (parser->array_format.last_char != '\\') {
+                        parser->array_format.is_in_str = false;
+                    }
                 } else {
-                    save_input(parser, &parser->buf_cursor,
-                               buf_slice(buf, start, buf.size));
-                    return JsonTraceResult_NeedMoreInput;
+                    parser->array_format.is_in_str = true;
+                }
+            } break;
+
+            case '{': {
+                if (!parser->array_format.is_in_str) {
+                    push_stack(parser, '{');
+                }
+            } break;
+
+            case '}': {
+                if (!parser->array_format.is_in_str) {
+                    pop_stack(parser);
+
+                    if (is_stack_empty(parser)) {
+                        usize end = *cursor;
+                        Buf trace_event;
+                        if (parser->buf_cursor) {
+                            save_input(parser, &parser->buf_cursor,
+                                       buf_slice(buf, start, end));
+                            trace_event =
+                                buf_slice(parser->buf, 0, parser->buf_cursor);
+                        } else {
+                            trace_event = buf_slice(buf, start, end);
+                        }
+                        if (handle_trace_event(parser, trace, trace_event) ==
+                            JsonTraceResult_Error) {
+                            return JsonTraceResult_Error;
+                        }
+                        found = true;
+                    }
+                }
+            } break;
+
+            default: {
+            } break;
+        }
+
+        parser->array_format.last_char = ch;
+    }
+
+    if (found) {
+        parser->state = State_ArrayFormat_AfterTraceEvent;
+        return JsonTraceResult_Continue;
+    } else {
+        save_input(parser, &parser->buf_cursor,
+                   buf_slice(buf, start, buf.size));
+        return JsonTraceResult_NeedMoreInput;
+    }
+}
+
+static JsonTraceResult on_state_array_format_after_trace_event(
+    JsonTraceParser *parser, Buf buf, usize *cursor) {
+    if (!skip_whitespace(buf, cursor)) {
+        return JsonTraceResult_NeedMoreInput;
+    }
+
+    u8 ch = buf.data[*cursor];
+    if (ch == ',') {
+        (*cursor)++;
+        parser->state = State_ArrayFormat;
+        parser->buf_cursor = 0;
+    } else if (ch == ']') {
+        (*cursor)++;
+        if (parser->has_object_format) {
+            parser->state = State_ObjectFormat_AfterValue;
+        } else {
+            parser->state = State_Done;
+            return JsonTraceResult_Done;
+        }
+    } else {
+        return set_error(parser,
+                         "Invalid JSON Trace: expected ',' or ']' but got "
+                         "'%c'",
+                         ch);
+    }
+
+    return JsonTraceResult_Continue;
+}
+
+static JsonTraceResult on_state_skip_char(JsonTraceParser *parser, Buf buf,
+                                          usize *cursor) {
+    if (!skip_whitespace(buf, cursor)) {
+        return JsonTraceResult_NeedMoreInput;
+    }
+    u8 ch = buf.data[*cursor];
+    if (ch != parser->skip_char.target) {
+        return set_error(parser,
+                         "Invalid JSON Trace: expected '%c' but got '%c'",
+                         parser->skip_char.target, ch);
+    }
+    (*cursor)++;
+    parser->state = parser->skip_char.next_state;
+    switch (parser->state) {
+        case State_ObjectFormat_TraceEvents: {
+        } break;
+
+        case State_ObjectFormat_UnknownKey: {
+            parser->unknown_key = {};
+        } break;
+
+        default: {
+            UNREACHABLE;
+        } break;
+    }
+
+    return JsonTraceResult_Continue;
+}
+
+JsonTraceResult json_trace_parser_parse(JsonTraceParser *parser, Trace *trace,
+                                        Buf buf) {
+    usize cursor = 0;
+    while (true) {
+        switch (parser->state) {
+            case State_Init: {
+                JsonTraceResult result = on_state_init(parser, buf, &cursor);
+                if (result != JsonTraceResult_Continue) {
+                    return result;
+                }
+            } break;
+
+            case State_ObjectFormat: {
+                JsonTraceResult result =
+                    on_state_object_format(parser, buf, &cursor);
+                if (result != JsonTraceResult_Continue) {
+                    return result;
+                }
+            } break;
+
+            case State_ObjectFormat_Key_Continued: {
+                JsonTraceResult result =
+                    on_state_object_format_key_continued(parser, buf, &cursor);
+                if (result != JsonTraceResult_Continue) {
+                    return result;
+                }
+            } break;
+
+            case State_ObjectFormat_TraceEvents: {
+                JsonTraceResult result =
+                    on_state_object_format_trace_events(parser, buf, &cursor);
+                if (result != JsonTraceResult_Continue) {
+                    return result;
+                }
+            } break;
+
+            case State_ObjectFormat_UnknownKey: {
+                JsonTraceResult result =
+                    on_state_object_format_unknown_key(parser, buf, &cursor);
+                if (result != JsonTraceResult_Continue) {
+                    return result;
+                }
+            } break;
+
+            case State_ObjectFormat_AfterValue: {
+                JsonTraceResult result =
+                    on_state_object_format_after_value(parser, buf, &cursor);
+                if (result != JsonTraceResult_Continue) {
+                    return result;
+                }
+            } break;
+
+            case State_ArrayFormat: {
+                JsonTraceResult result =
+                    on_state_array_format(parser, buf, &cursor, trace);
+                if (result != JsonTraceResult_Continue) {
+                    return result;
                 }
             } break;
 
             case State_ArrayFormat_AfterTraceEvent: {
-                if (!skip_whitespace(buf, &cursor)) {
-                    return JsonTraceResult_NeedMoreInput;
-                }
-
-                u8 ch = buf.data[cursor];
-                if (ch == ',') {
-                    cursor += 1;
-                    parser->state = State_ArrayFormat;
-                    parser->buf_cursor = 0;
-                } else if (ch == ']') {
-                    cursor += 1;
-                    if (parser->has_object_format) {
-                        parser->state = State_ObjectFormat_AfterValue;
-                    } else {
-                        parser->state = State_Done;
-                        return JsonTraceResult_Done;
-                    }
-                } else {
-                    return set_error(
-                        parser,
-                        "Invalid JSON Trace: expected ',' or ']' but got "
-                        "'%c'",
-                        ch);
+                JsonTraceResult result =
+                    on_state_array_format_after_trace_event(parser, buf,
+                                                            &cursor);
+                if (result != JsonTraceResult_Continue) {
+                    return result;
                 }
             } break;
 
             case State_SkipChar: {
-                if (!skip_whitespace(buf, &cursor)) {
-                    return JsonTraceResult_NeedMoreInput;
-                }
-                u8 ch = buf.data[cursor];
-                if (ch != parser->skip_char.target) {
-                    return set_error(
-                        parser,
-                        "Invalid JSON Trace: expected '%c' but got '%c'",
-                        parser->skip_char.target, ch);
-                }
-                cursor += 1;
-                parser->state = parser->skip_char.next_state;
-                switch (parser->state) {
-                    case State_ObjectFormat_TraceEvents: {
-                    } break;
-
-                    case State_ObjectFormat_UnknownKey: {
-                        parser->unknown_key = {};
-                    } break;
-
-                    default: {
-                        UNREACHABLE;
-                    } break;
+                JsonTraceResult result =
+                    on_state_skip_char(parser, buf, &cursor);
+                if (result != JsonTraceResult_Continue) {
+                    return result;
                 }
             } break;
 

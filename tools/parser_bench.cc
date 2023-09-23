@@ -87,7 +87,7 @@ static int run(Args args) {
         return 1;
     }
 
-    u8 buf[4096];
+    u8 buf[4 * 1024 * 1024];
 
     MemoryArena arena;
     memory_arena_init(&arena);
