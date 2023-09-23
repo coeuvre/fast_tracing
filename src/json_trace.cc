@@ -83,17 +83,10 @@ static JsonTraceResult set_error(JsonTraceParser *parser, const char *fmt,
 static bool skip_whitespace(Buf buf, usize *cursor) {
     while (*cursor < buf.size) {
         u8 ch = buf.data[*cursor];
-        switch (ch) {
-            case ' ':
-            case '\t':
-            case '\n':
-            case '\r': {
-                (*cursor)++;
-            } break;
-
-            default: {
-                return true;
-            } break;
+        if (ch <= 32) {
+            (*cursor)++;
+        } else {
+            return true;
         }
     }
     return false;
